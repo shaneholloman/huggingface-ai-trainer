@@ -139,6 +139,10 @@ class SweepConfig:
     min_delta: Optional[float] = None  # For early stopping
     sampler: Optional[str] = None  # For Optuna
     n_jobs: Optional[int] = None  # For parallel execution
+    # W&B native sweep integration
+    wandb_sweep: bool = False  # Enable W&B native sweep dashboard
+    wandb_project: Optional[str] = None  # W&B project name for sweep
+    wandb_entity: Optional[str] = None  # W&B entity (team/username)
 
 
 class SweepResult:
@@ -308,12 +312,124 @@ class HyperparameterSweep:
 
         return False
 
+    def _create_wandb_sweep(self) -> Optional[str]:
+        """Create a W&B sweep and return the sweep_id."""
+        if not self.config.wandb_sweep:
+            return None
+
+        try:
+            import wandb
+        except ImportError:
+            logger.warning("wandb not installed. Install with: pip install wandb")
+            return None
+
+        # Build W&B sweep config from our parameters
+        wandb_params = {}
+        if isinstance(self.config.parameters, list):
+            for spec in self.config.parameters:
+                if spec.choices:
+                    wandb_params[spec.name] = {"values": spec.choices}
+                elif spec.distribution == "log_uniform":
+                    wandb_params[spec.name] = {
+                        "distribution": "log_uniform_values",
+                        "min": spec.low,
+                        "max": spec.high,
+                    }
+                elif spec.distribution == "int_uniform":
+                    wandb_params[spec.name] = {
+                        "distribution": "int_uniform",
+                        "min": int(spec.low),
+                        "max": int(spec.high),
+                    }
+                else:
+                    wandb_params[spec.name] = {
+                        "distribution": "uniform",
+                        "min": spec.low,
+                        "max": spec.high,
+                    }
+        else:
+            for name, spec in self.config.parameters.items():
+                if isinstance(spec, list):
+                    wandb_params[name] = {"values": spec}
+                elif isinstance(spec, ParameterRange):
+                    if spec.distribution == "log_uniform":
+                        wandb_params[name] = {
+                            "distribution": "log_uniform_values",
+                            "min": spec.low,
+                            "max": spec.high,
+                        }
+                    elif spec.distribution == "int_uniform":
+                        wandb_params[name] = {
+                            "distribution": "int_uniform",
+                            "min": int(spec.low),
+                            "max": int(spec.high),
+                        }
+                    else:
+                        wandb_params[name] = {
+                            "distribution": "uniform",
+                            "min": spec.low,
+                            "max": spec.high,
+                        }
+                elif isinstance(spec, tuple) and len(spec) == 3:
+                    low, high, dist = spec
+                    if dist == "log_uniform":
+                        wandb_params[name] = {
+                            "distribution": "log_uniform_values",
+                            "min": low,
+                            "max": high,
+                        }
+                    else:
+                        wandb_params[name] = {
+                            "distribution": "uniform",
+                            "min": low,
+                            "max": high,
+                        }
+
+        # Map our backend to W&B method
+        method_map = {
+            SweepBackend.OPTUNA: "bayes",
+            SweepBackend.RANDOM_SEARCH: "random",
+            SweepBackend.GRID_SEARCH: "grid",
+        }
+        wandb_method = method_map.get(self.config.backend, "bayes")
+
+        sweep_config = {
+            "method": wandb_method,
+            "metric": {
+                "name": self.config.metric,
+                "goal": self.config.direction,
+            },
+            "parameters": wandb_params,
+            "run_cap": self.config.n_trials,
+        }
+
+        project = self.config.wandb_project or "aitraining-sweep"
+        entity = self.config.wandb_entity
+
+        try:
+            sweep_id = wandb.sweep(
+                sweep=sweep_config,
+                project=project,
+                entity=entity,
+            )
+            logger.info(f"Created W&B sweep: {sweep_id} in project '{project}'")
+            logger.info(f"View sweep dashboard at: https://wandb.ai/{entity or 'your-entity'}/{project}/sweeps/{sweep_id}")
+            return sweep_id
+        except Exception as e:
+            logger.warning(f"Failed to create W&B sweep: {e}")
+            return None
+
     def _run_optuna(self, train_function):
         """Run sweep using Optuna."""
         try:
             import optuna
         except ImportError:
             raise ImportError("Optuna is required for hyperparameter sweeps. Install with: pip install optuna")
+
+        # Create W&B sweep if enabled
+        wandb_sweep_id = self._create_wandb_sweep()
+        wandb_project = self.config.wandb_project or "aitraining-sweep"
+        wandb_entity = self.config.wandb_entity
 
         def objective(trial):
             params = {}
@@ -351,18 +467,56 @@ class HyperparameterSweep:
                         else:
                             params[name] = trial.suggest_float(name, low, high)
 
-            return train_function(params)
+            # Initialize W&B run linked to sweep if enabled
+            if wandb_sweep_id:
+                try:
+                    import wandb
+
+                    # Use group to link runs to the sweep for aggregated views
+                    wandb.init(
+                        project=wandb_project,
+                        entity=wandb_entity,
+                        group=wandb_sweep_id,
+                        name=f"trial-{trial.number}",
+                        config=params,
+                        reinit=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to init W&B run for trial {trial.number}: {e}")
+
+            try:
+                result = train_function(params)
+            finally:
+                # Finish W&B run if we started one
+                if wandb_sweep_id:
+                    try:
+                        import wandb
+
+                        if wandb.run is not None:
+                            wandb.finish()
+                    except Exception:
+                        pass
+
+            return result
 
         study = optuna.create_study(direction=self.config.direction)
         study.optimize(objective, n_trials=self.config.n_trials, timeout=self.config.timeout)
 
-        return SweepResult(
+        sweep_result = SweepResult(
             best_params=study.best_params,
             best_value=study.best_value,
             trials=[{"params": t.params, "value": t.value} for t in study.trials],
             backend="optuna",
             study=study,
         )
+
+        # Add W&B sweep info to result
+        if wandb_sweep_id:
+            sweep_result.wandb_sweep_id = wandb_sweep_id
+            sweep_result.wandb_project = wandb_project
+            logger.info(f"W&B sweep completed. View results at: https://wandb.ai/{wandb_entity or 'your-entity'}/{wandb_project}/sweeps/{wandb_sweep_id}")
+
+        return sweep_result
 
     def _run_random_search(self, train_function):
         """Run random search."""
@@ -500,6 +654,9 @@ def run_autotrain_sweep(
     n_trials: int = 10,
     backend: str = "optuna",
     output_dir: Optional[str] = None,
+    wandb_sweep: bool = False,
+    wandb_project: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
 ) -> SweepResult:
     """
     Convenience function to run hyperparameter sweep for AutoTrain.
@@ -543,6 +700,9 @@ def run_autotrain_sweep(
         direction=direction,
         parameters=processed_params,
         metric=metric,
+        wandb_sweep=wandb_sweep,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
     )
 
     sweep = HyperparameterSweep(config)

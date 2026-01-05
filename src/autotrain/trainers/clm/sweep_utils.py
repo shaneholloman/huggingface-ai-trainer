@@ -64,6 +64,9 @@ def run_with_sweep(config: LLMTrainingParams, train_func: Callable) -> Any:
         n_trials=config.sweep_n_trials,
         backend=config.sweep_backend or "optuna",
         output_dir=f"{config.project_name}/sweep",
+        wandb_sweep=getattr(config, "wandb_sweep", False),
+        wandb_project=getattr(config, "wandb_sweep_project", None) or config.project_name,
+        wandb_entity=getattr(config, "wandb_sweep_entity", None),
     )
 
     logger.info(f"Sweep completed! Best params: {result.best_params}")

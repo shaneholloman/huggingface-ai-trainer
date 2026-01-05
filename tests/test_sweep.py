@@ -417,3 +417,81 @@ def test_sweep_with_failed_trials():
             # But we should still have some successful trials
             assert len(result.trials) > 0
             assert result.best_value is not None
+
+
+@pytest.mark.skipif(not pytest.importorskip("optuna"), reason="Optuna not installed")
+def test_wandb_sweep_integration():
+    """Test W&B native sweep integration creates sweep and links runs."""
+    config = SweepConfig(
+        parameters=[ParameterRange(name="lr", param_type="float", low=1e-5, high=1e-3)],
+        n_trials=2,
+        backend=SweepBackend.OPTUNA,
+        wandb_sweep=True,
+        wandb_project="test-project",
+        wandb_entity="test-entity",
+    )
+
+    def train_fn(params):
+        return params["lr"] * 100
+
+    with patch("wandb.sweep") as mock_wandb_sweep, \
+         patch("wandb.init") as mock_wandb_init, \
+         patch("wandb.finish") as mock_wandb_finish, \
+         patch("wandb.run", None):
+
+        mock_wandb_sweep.return_value = "test-sweep-id-123"
+
+        sweep = HyperparameterSweep(config, train_fn)
+        result = sweep.run()
+
+        # Verify wandb.sweep was called with correct config
+        mock_wandb_sweep.assert_called_once()
+        call_kwargs = mock_wandb_sweep.call_args[1]
+        assert call_kwargs["project"] == "test-project"
+        assert call_kwargs["entity"] == "test-entity"
+        sweep_config_arg = call_kwargs["sweep"]
+        assert sweep_config_arg["method"] == "bayes"  # optuna maps to bayes
+        assert sweep_config_arg["metric"]["goal"] == "minimize"
+        assert "lr" in sweep_config_arg["parameters"]
+
+        # Verify wandb.init was called for each trial with group=sweep_id
+        assert mock_wandb_init.call_count == 2
+        for call in mock_wandb_init.call_args_list:
+            call_kwargs = call[1]
+            assert call_kwargs["group"] == "test-sweep-id-123"
+            assert call_kwargs["project"] == "test-project"
+            assert call_kwargs["entity"] == "test-entity"
+
+        # Verify sweep_id is attached to result
+        assert result.wandb_sweep_id == "test-sweep-id-123"
+        assert result.wandb_project == "test-project"
+
+
+def test_wandb_sweep_config_passed_to_run_autotrain_sweep():
+    """Test W&B params are passed through run_autotrain_sweep."""
+    sweep_parameters = {"lr": (1e-5, 1e-3, "log_uniform")}
+
+    def mock_train(params):
+        return 0.5
+
+    with patch("autotrain.utils.HyperparameterSweep") as MockSweep:
+        mock_instance = Mock()
+        mock_instance.run.return_value = SweepResult(best_params={"lr": 1e-4}, best_value=0.5, trials=[])
+        MockSweep.return_value = mock_instance
+
+        run_autotrain_sweep(
+            model_config={},
+            sweep_parameters=sweep_parameters,
+            train_function=mock_train,
+            n_trials=2,
+            backend="optuna",
+            wandb_sweep=True,
+            wandb_project="my-project",
+            wandb_entity="my-team",
+        )
+
+        # Verify SweepConfig was created with W&B params
+        call_args = MockSweep.call_args[0][0]  # First positional arg is config
+        assert call_args.wandb_sweep is True
+        assert call_args.wandb_project == "my-project"
+        assert call_args.wandb_entity == "my-team"
