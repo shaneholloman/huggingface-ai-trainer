@@ -266,6 +266,10 @@ FIELD_SCOPES = {
     "sweep_metric": ["all"],
     "sweep_direction": ["all"],
     "sweep_params": ["all"],
+    "wandb_sweep": ["all"],
+    "wandb_sweep_project": ["all"],
+    "wandb_sweep_entity": ["all"],
+    "wandb_sweep_id": ["all"],
     # Enhanced eval - all trainers
     "use_enhanced_eval": ["all"],
     "eval_metrics": ["all"],
