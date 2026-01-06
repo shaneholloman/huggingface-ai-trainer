@@ -480,6 +480,12 @@ class HyperparameterSweep:
                 try:
                     import wandb
 
+                    # Set WANDB_PROJECT/ENTITY env vars so trainer's internal wandb.init() uses correct project
+                    # This prevents the trainer from logging to 'huggingface' default project
+                    os.environ["WANDB_PROJECT"] = wandb_project
+                    if wandb_entity:
+                        os.environ["WANDB_ENTITY"] = wandb_entity
+
                     # Use group to link runs to the sweep for aggregated views
                     wandb.init(
                         project=wandb_project,

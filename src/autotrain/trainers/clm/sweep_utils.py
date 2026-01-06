@@ -3,6 +3,7 @@ Shared sweep utilities for CLM trainers
 """
 
 import json
+import os
 from typing import Any, Callable
 
 from autotrain import logger
@@ -37,6 +38,15 @@ def run_with_sweep(config: LLMTrainingParams, train_func: Callable) -> Any:
 
     # Create train function for sweep
     def train_for_sweep(params):
+        # Set WANDB_PROJECT so trainer's internal wandb.init() uses correct project
+        # This prevents the trainer from logging to 'huggingface' default project
+        if config.log == "wandb":
+            wandb_project = getattr(config, "wandb_sweep_project", None) or config.project_name
+            os.environ["WANDB_PROJECT"] = wandb_project
+            if getattr(config, "wandb_sweep_entity", None):
+                os.environ["WANDB_ENTITY"] = config.wandb_sweep_entity
+            logger.info(f"Set WANDB_PROJECT={wandb_project} for trainer")
+
         # Create new config with sweep params
         trial_config = LLMTrainingParams(**{**vars(config), **params})
         trial_config.use_sweep = False  # Prevent recursive sweep

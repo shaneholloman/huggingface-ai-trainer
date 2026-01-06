@@ -1610,9 +1610,16 @@ def get_model(config, tokenizer):
             "trust_remote_code": ALLOW_REMOTE_CODE,
         }
 
-        # Set device map for proper placement
+        # Set device map and dtype for proper placement
         if torch.cuda.is_available():
             model_kwargs["device_map"] = "auto"
+            # Set dtype based on mixed_precision to avoid loading in float32
+            if config.mixed_precision == "bf16":
+                model_kwargs["torch_dtype"] = torch.bfloat16
+                logger.info("Loading model in bfloat16 (mixed_precision=bf16)")
+            elif config.mixed_precision == "fp16":
+                model_kwargs["torch_dtype"] = torch.float16
+                logger.info("Loading model in float16 (mixed_precision=fp16)")
         elif torch.backends.mps.is_available():
             # For MPS, we'll load to CPU first then move manually
             pass
