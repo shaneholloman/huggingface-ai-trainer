@@ -41,7 +41,8 @@ def run_with_sweep(config: LLMTrainingParams, train_func: Callable) -> Any:
         # Set WANDB_PROJECT so trainer's internal wandb.init() uses correct project
         # This prevents the trainer from logging to 'huggingface' default project
         if config.log == "wandb":
-            wandb_project = getattr(config, "wandb_sweep_project", None) or config.project_name
+            # Use basename of project_name since it's the output path, not a W&B project name
+            wandb_project = getattr(config, "wandb_sweep_project", None) or os.path.basename(config.project_name)
             os.environ["WANDB_PROJECT"] = wandb_project
             if getattr(config, "wandb_sweep_entity", None):
                 os.environ["WANDB_ENTITY"] = config.wandb_sweep_entity
@@ -75,7 +76,7 @@ def run_with_sweep(config: LLMTrainingParams, train_func: Callable) -> Any:
         backend=config.sweep_backend or "optuna",
         output_dir=f"{config.project_name}/sweep",
         wandb_sweep=getattr(config, "wandb_sweep", False),
-        wandb_project=getattr(config, "wandb_sweep_project", None) or config.project_name,
+        wandb_project=getattr(config, "wandb_sweep_project", None) or os.path.basename(config.project_name),
         wandb_entity=getattr(config, "wandb_sweep_entity", None),
         wandb_sweep_id=getattr(config, "wandb_sweep_id", None),
     )

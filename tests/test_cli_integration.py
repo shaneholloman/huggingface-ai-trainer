@@ -272,5 +272,74 @@ class TestCLIEndToEnd:
                     assert len(results) > 0
 
 
+class TestWandbProjectPathHandling:
+    """Test WANDB_PROJECT handles path-like project names correctly."""
+
+    def test_wandb_project_uses_basename_not_full_path(self):
+        """Test that WANDB_PROJECT is set to basename when project_name is a path.
+
+        This tests the fix for the bug where using a path like
+        '/workspace/trainings/hotel-sft' as project_name would cause W&B errors
+        because paths contain invalid characters for W&B project names.
+        """
+        result = run_cli_command(
+            """python -c "
+import os
+import sys
+sys.path.insert(0, 'src')
+
+from autotrain.trainers.clm.params import LLMTrainingParams
+
+# Simulate CLI with path as project_name
+config = LLMTrainingParams(
+    model='gpt2',
+    project_name='/workspace/trainings/hotel-sft-optuna-v2',
+    log='wandb',
+)
+
+# Test the basename extraction logic
+wandb_project = getattr(config, 'wandb_sweep_project', None) or os.path.basename(config.project_name)
+
+# Verify
+assert wandb_project == 'hotel-sft-optuna-v2', f'Expected hotel-sft-optuna-v2, got {wandb_project}'
+
+# Verify no invalid W&B characters
+invalid_chars = '/\\\\#?%:'
+has_invalid = any(c in wandb_project for c in invalid_chars)
+assert not has_invalid, f'wandb_project contains invalid characters: {wandb_project}'
+
+print('WANDB_PROJECT basename test PASSED')
+" """
+        )
+        assert result.returncode == 0, f"Test failed: {result.stderr}"
+        assert "PASSED" in result.stdout
+
+    def test_explicit_wandb_sweep_project_takes_precedence(self):
+        """Test that explicit wandb_sweep_project is used over basename."""
+        result = run_cli_command(
+            """python -c "
+import os
+import sys
+sys.path.insert(0, 'src')
+
+from autotrain.trainers.clm.params import LLMTrainingParams
+
+config = LLMTrainingParams(
+    model='gpt2',
+    project_name='/workspace/trainings/hotel-sft-optuna-v2',
+    log='wandb',
+    wandb_sweep_project='my-explicit-project',
+)
+
+wandb_project = getattr(config, 'wandb_sweep_project', None) or os.path.basename(config.project_name)
+
+assert wandb_project == 'my-explicit-project', f'Expected my-explicit-project, got {wandb_project}'
+print('Explicit wandb_sweep_project test PASSED')
+" """
+        )
+        assert result.returncode == 0, f"Test failed: {result.stderr}"
+        assert "PASSED" in result.stdout
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

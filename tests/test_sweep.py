@@ -628,3 +628,89 @@ class TestWandbSweepRealIntegration:
 
         # Should use the same sweep_id
         assert result2.wandb_sweep_id == sweep_id
+
+
+class TestWandbProjectBasename:
+    """Tests for WANDB_PROJECT using basename instead of full path."""
+
+    def test_wandb_project_uses_basename_when_project_name_is_path(self):
+        """Test that WANDB_PROJECT is set to basename when project_name is a path."""
+        from autotrain.trainers.clm.params import LLMTrainingParams
+        from autotrain.trainers.clm.sweep_utils import run_with_sweep
+
+        # Create config with project_name as a path (like output directory)
+        config = LLMTrainingParams(
+            model="test-model",
+            project_name="/workspace/trainings/hotel-sft-optuna-v2",
+            log="wandb",
+            use_sweep=True,
+            sweep_backend="optuna",
+            sweep_trials=1,
+        )
+
+        # Track what WANDB_PROJECT gets set to
+        captured_project = None
+
+        def mock_train_func(trial_config):
+            nonlocal captured_project
+            captured_project = os.environ.get("WANDB_PROJECT")
+            # Return a mock trainer with minimal state
+            mock_trainer = Mock()
+            mock_trainer.state.log_history = [{"eval_loss": 0.5}]
+            return mock_trainer
+
+        # Mock run_autotrain_sweep to just call our train function once
+        with patch("autotrain.utils.run_autotrain_sweep") as mock_sweep:
+            # Simulate sweep calling the train function
+            def run_sweep_side_effect(**kwargs):
+                train_fn = kwargs["train_function"]
+                train_fn({"lr": 1e-4})  # Call with dummy params
+                return Mock(best_params={"lr": 1e-4}, best_value=0.5, trials=[])
+
+            mock_sweep.side_effect = run_sweep_side_effect
+
+            run_with_sweep(config, mock_train_func)
+
+        # Verify WANDB_PROJECT was set to basename, not full path
+        assert captured_project == "hotel-sft-optuna-v2", (
+            f"Expected WANDB_PROJECT='hotel-sft-optuna-v2', got '{captured_project}'"
+        )
+
+    def test_wandb_project_uses_explicit_sweep_project_over_basename(self):
+        """Test that explicit wandb_sweep_project takes precedence over basename."""
+        from autotrain.trainers.clm.params import LLMTrainingParams
+        from autotrain.trainers.clm.sweep_utils import run_with_sweep
+
+        config = LLMTrainingParams(
+            model="test-model",
+            project_name="/workspace/trainings/hotel-sft-optuna-v2",
+            log="wandb",
+            use_sweep=True,
+            sweep_backend="optuna",
+            sweep_trials=1,
+            wandb_sweep_project="my-custom-project",  # Explicit project name
+        )
+
+        captured_project = None
+
+        def mock_train_func(trial_config):
+            nonlocal captured_project
+            captured_project = os.environ.get("WANDB_PROJECT")
+            mock_trainer = Mock()
+            mock_trainer.state.log_history = [{"eval_loss": 0.5}]
+            return mock_trainer
+
+        with patch("autotrain.utils.run_autotrain_sweep") as mock_sweep:
+            def run_sweep_side_effect(**kwargs):
+                train_fn = kwargs["train_function"]
+                train_fn({"lr": 1e-4})
+                return Mock(best_params={"lr": 1e-4}, best_value=0.5, trials=[])
+
+            mock_sweep.side_effect = run_sweep_side_effect
+
+            run_with_sweep(config, mock_train_func)
+
+        # Should use explicit wandb_sweep_project, not basename
+        assert captured_project == "my-custom-project", (
+            f"Expected WANDB_PROJECT='my-custom-project', got '{captured_project}'"
+        )
