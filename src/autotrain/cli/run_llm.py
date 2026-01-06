@@ -266,6 +266,7 @@ FIELD_SCOPES = {
     "sweep_metric": ["all"],
     "sweep_direction": ["all"],
     "sweep_params": ["all"],
+    "post_trial_script": ["all"],
     "wandb_sweep": ["all"],
     "wandb_sweep_project": ["all"],
     "wandb_sweep_entity": ["all"],

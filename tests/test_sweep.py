@@ -18,6 +18,7 @@ from autotrain.utils import (
     SweepBackend,
     SweepConfig,
     SweepResult,
+    TrialInfo,
     run_autotrain_sweep,
 )
 
@@ -714,3 +715,331 @@ class TestWandbProjectBasename:
         assert captured_project == "my-custom-project", (
             f"Expected WANDB_PROJECT='my-custom-project', got '{captured_project}'"
         )
+
+
+class TestPostTrialCallback:
+    """Tests for post-trial callback and script functionality."""
+
+    def test_post_trial_callback_invoked(self):
+        """Test that post_trial_callback is called after each trial."""
+        from autotrain.utils import TrialInfo
+
+        callback_calls = []
+
+        def my_callback(trial_info: TrialInfo):
+            callback_calls.append(trial_info)
+
+        config = SweepConfig(
+            parameters={"x": [0.1, 0.2, 0.3]},
+            n_trials=3,
+            backend=SweepBackend.RANDOM_SEARCH,
+            post_trial_callback=my_callback,
+        )
+
+        def train_fn(params):
+            return params["x"] * 10
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+            sweep = HyperparameterSweep(config, train_fn)
+            result = sweep.run()
+
+            # Callback should be called once per trial
+            assert len(callback_calls) == 3
+            # Each call should receive a TrialInfo object
+            for info in callback_calls:
+                assert isinstance(info, TrialInfo)
+                assert info.trial_number >= 0
+                assert "x" in info.params
+                assert info.metric_value is not None
+
+    def test_post_trial_callback_receives_correct_info(self):
+        """Test that callback receives correct TrialInfo with is_best tracking."""
+        from autotrain.utils import TrialInfo
+
+        callback_calls = []
+
+        def my_callback(trial_info: TrialInfo):
+            callback_calls.append(trial_info)
+
+        config = SweepConfig(
+            parameters={"x": [0.5, 0.1, 0.3]},  # 0.1 will be best (minimize)
+            n_trials=3,
+            backend=SweepBackend.GRID_SEARCH,
+            direction="minimize",
+            post_trial_callback=my_callback,
+        )
+
+        def train_fn(params):
+            return params["x"]  # Lower is better
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+            sweep = HyperparameterSweep(config, train_fn)
+            result = sweep.run()
+
+            assert len(callback_calls) == 3
+
+            # Find which call had is_best=True
+            best_calls = [c for c in callback_calls if c.is_best]
+            # At least one should be marked as best
+            assert len(best_calls) >= 1
+            # The best one should have the lowest metric value
+            best_call = best_calls[-1]  # Last one marked as best is the actual best
+            assert best_call.metric_value == min(c.metric_value for c in callback_calls)
+
+    def test_post_trial_callback_maximize_direction(self):
+        """Test callback with maximize direction correctly identifies best."""
+        from autotrain.utils import TrialInfo
+
+        callback_calls = []
+
+        def my_callback(trial_info: TrialInfo):
+            callback_calls.append(trial_info)
+
+        config = SweepConfig(
+            parameters={"x": [0.5, 0.9, 0.3]},  # 0.9 will be best (maximize)
+            n_trials=3,
+            backend=SweepBackend.GRID_SEARCH,
+            direction="maximize",
+            post_trial_callback=my_callback,
+        )
+
+        def train_fn(params):
+            return params["x"]  # Higher is better
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+            sweep = HyperparameterSweep(config, train_fn)
+            result = sweep.run()
+
+            assert len(callback_calls) == 3
+
+            # The best one should have the highest metric value
+            best_calls = [c for c in callback_calls if c.is_best]
+            assert len(best_calls) >= 1
+            best_call = best_calls[-1]
+            assert best_call.metric_value == max(c.metric_value for c in callback_calls)
+
+    def test_post_trial_script_invoked(self):
+        """Test that post_trial_script is executed after each trial."""
+        import subprocess
+
+        config = SweepConfig(
+            parameters={"x": [0.1, 0.2]},
+            n_trials=2,
+            backend=SweepBackend.RANDOM_SEARCH,
+            post_trial_script="echo 'Trial $TRIAL_NUMBER completed'",
+        )
+
+        def train_fn(params):
+            return params["x"]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+
+                sweep = HyperparameterSweep(config, train_fn)
+                result = sweep.run()
+
+                # Script should be called twice (once per trial)
+                assert mock_run.call_count == 2
+
+                # Verify script was called with shell=True
+                for call in mock_run.call_args_list:
+                    assert call[1]["shell"] is True
+
+    def test_post_trial_script_env_vars(self):
+        """Test that post_trial_script receives correct environment variables."""
+        captured_envs = []
+
+        def capture_env(*args, **kwargs):
+            env = kwargs.get("env", {})
+            captured_envs.append({
+                "TRIAL_NUMBER": env.get("TRIAL_NUMBER"),
+                "TRIAL_METRIC_VALUE": env.get("TRIAL_METRIC_VALUE"),
+                "TRIAL_IS_BEST": env.get("TRIAL_IS_BEST"),
+                "TRIAL_OUTPUT_DIR": env.get("TRIAL_OUTPUT_DIR"),
+                "TRIAL_PARAMS": env.get("TRIAL_PARAMS"),
+            })
+            return Mock(returncode=0, stdout="", stderr="")
+
+        config = SweepConfig(
+            parameters={"lr": [0.001, 0.01]},
+            n_trials=2,
+            backend=SweepBackend.GRID_SEARCH,
+            post_trial_script="echo test",
+        )
+
+        def train_fn(params):
+            return params["lr"] * 100
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+
+            with patch("subprocess.run", side_effect=capture_env):
+                sweep = HyperparameterSweep(config, train_fn)
+                result = sweep.run()
+
+            assert len(captured_envs) == 2
+
+            for i, env in enumerate(captured_envs):
+                # TRIAL_NUMBER should be set
+                assert env["TRIAL_NUMBER"] is not None
+                assert int(env["TRIAL_NUMBER"]) >= 0
+
+                # TRIAL_METRIC_VALUE should be set
+                assert env["TRIAL_METRIC_VALUE"] is not None
+                assert float(env["TRIAL_METRIC_VALUE"]) > 0
+
+                # TRIAL_IS_BEST should be "true" or "false"
+                assert env["TRIAL_IS_BEST"] in ("true", "false")
+
+                # TRIAL_PARAMS should contain the parameters
+                assert env["TRIAL_PARAMS"] is not None
+                assert "lr" in env["TRIAL_PARAMS"]
+
+    def test_post_trial_callback_failure_does_not_stop_sweep(self):
+        """Test that callback failure doesn't stop the sweep."""
+        call_count = [0]
+
+        def failing_callback(trial_info):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ValueError("Simulated callback failure")
+
+        config = SweepConfig(
+            parameters={"x": [0.1, 0.2, 0.3]},
+            n_trials=3,
+            backend=SweepBackend.GRID_SEARCH,
+            post_trial_callback=failing_callback,
+        )
+
+        def train_fn(params):
+            return params["x"]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+
+            with patch("autotrain.utils.logger.warning") as mock_warning:
+                sweep = HyperparameterSweep(config, train_fn)
+                result = sweep.run()
+
+                # Sweep should complete despite callback failure
+                assert len(result.trials) == 3
+                # Warning should have been logged
+                assert mock_warning.called
+
+    def test_post_trial_script_failure_does_not_stop_sweep(self):
+        """Test that script failure doesn't stop the sweep."""
+        config = SweepConfig(
+            parameters={"x": [0.1, 0.2]},
+            n_trials=2,
+            backend=SweepBackend.RANDOM_SEARCH,
+            post_trial_script="exit 1",  # Script that fails
+        )
+
+        def train_fn(params):
+            return params["x"]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
+
+                with patch("autotrain.utils.logger.warning") as mock_warning:
+                    sweep = HyperparameterSweep(config, train_fn)
+                    result = sweep.run()
+
+                    # Sweep should complete
+                    assert len(result.trials) == 2
+                    # Warning should have been logged
+                    assert mock_warning.called
+
+    def test_run_autotrain_sweep_with_post_trial_callback(self):
+        """Test that run_autotrain_sweep passes post_trial_callback to SweepConfig."""
+        from autotrain.utils import TrialInfo
+
+        callback_calls = []
+
+        def my_callback(trial_info: TrialInfo):
+            callback_calls.append(trial_info)
+
+        sweep_parameters = {"lr": [0.001, 0.01]}
+
+        def mock_train(params):
+            return params["lr"] * 100
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = run_autotrain_sweep(
+                model_config={},
+                sweep_parameters=sweep_parameters,
+                train_function=mock_train,
+                n_trials=2,
+                backend="grid",
+                output_dir=tmp_dir,
+                post_trial_callback=my_callback,
+            )
+
+            assert len(callback_calls) == 2
+            for info in callback_calls:
+                assert isinstance(info, TrialInfo)
+
+    def test_run_autotrain_sweep_with_post_trial_script(self):
+        """Test that run_autotrain_sweep passes post_trial_script to SweepConfig."""
+        sweep_parameters = {"lr": [0.001, 0.01]}
+
+        def mock_train(params):
+            return params["lr"] * 100
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+
+                result = run_autotrain_sweep(
+                    model_config={},
+                    sweep_parameters=sweep_parameters,
+                    train_function=mock_train,
+                    n_trials=2,
+                    backend="grid",
+                    output_dir=tmp_dir,
+                    post_trial_script="echo 'Trial done'",
+                )
+
+                # Script should be called twice
+                assert mock_run.call_count == 2
+
+    @pytest.mark.skipif(not pytest.importorskip("optuna"), reason="Optuna not installed")
+    def test_post_trial_callback_with_optuna(self):
+        """Test post_trial_callback works with Optuna backend."""
+        from autotrain.utils import TrialInfo
+
+        callback_calls = []
+
+        def my_callback(trial_info: TrialInfo):
+            callback_calls.append(trial_info)
+
+        config = SweepConfig(
+            parameters={
+                "lr": ParameterRange(low=1e-5, high=1e-3, distribution="log_uniform"),
+            },
+            n_trials=3,
+            backend=SweepBackend.OPTUNA,
+            post_trial_callback=my_callback,
+        )
+
+        def train_fn(params):
+            return params["lr"] * 100
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config.output_dir = tmp_dir
+            sweep = HyperparameterSweep(config, train_fn)
+            result = sweep.run()
+
+            assert len(callback_calls) == 3
+            for info in callback_calls:
+                assert isinstance(info, TrialInfo)
+                assert "lr" in info.params

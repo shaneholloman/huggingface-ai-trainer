@@ -214,6 +214,10 @@ class LLMTrainingParams(AutoTrainParams):
         None,
         title='Sweep parameters as JSON (e.g., \'{"lr": {"low": 1e-5, "high": 1e-3, "type": "float"}}\')',
     )
+    post_trial_script: Optional[str] = Field(
+        None,
+        title="Shell script/command to run after each sweep trial (receives TRIAL_NUMBER, TRIAL_METRIC_VALUE, TRIAL_IS_BEST env vars)",
+    )
     # W&B Native Sweep Integration
     wandb_sweep: bool = Field(False, title="Enable W&B native sweep dashboard (creates aggregated sweep view)")
     wandb_sweep_project: Optional[str] = Field(None, title="W&B project name for sweep (defaults to project_name)")

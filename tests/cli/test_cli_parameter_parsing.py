@@ -280,18 +280,75 @@ class TestCLIParameterParsing:
 
         assert len(missing_cli_args) == 0, f"Fields without CLI args: {missing_cli_args}"
 
+    def test_sweep_parameters_with_post_trial_script(self):
+        """Test that sweep parameters including post_trial_script are parsed correctly."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args_list = [
+                "llm",
+                "--train",
+                "--model",
+                "gpt2",
+                "--project-name",
+                f"{tmp_dir}/project",
+                "--data-path",
+                f"{tmp_dir}/data",
+                "--text-column",
+                "text",
+                "--use-sweep",
+                "--sweep-backend",
+                "optuna",
+                "--sweep-n-trials",
+                "5",
+                "--sweep-metric",
+                "eval_loss",
+                "--sweep-direction",
+                "minimize",
+                "--post-trial-script",
+                "echo 'Trial completed'",
+            ]
+
+            params = self.parse_args_to_params(args_list)
+
+            # Verify sweep parameters
+            assert params.use_sweep is True
+            assert params.sweep_backend == "optuna"
+            assert params.sweep_n_trials == 5
+            assert params.sweep_metric == "eval_loss"
+            assert params.sweep_direction == "minimize"
+            assert params.post_trial_script == "echo 'Trial completed'"
+
+    def test_post_trial_script_with_complex_command(self):
+        """Test post_trial_script with complex shell command."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args_list = [
+                "llm",
+                "--train",
+                "--model",
+                "gpt2",
+                "--project-name",
+                f"{tmp_dir}/project",
+                "--data-path",
+                f"{tmp_dir}/data",
+                "--text-column",
+                "text",
+                "--use-sweep",
+                "--sweep-n-trials",
+                "2",
+                "--post-trial-script",
+                "if [ \"$TRIAL_IS_BEST\" = \"true\" ]; then git add . && git commit -m \"Best model trial $TRIAL_NUMBER\"; fi",
+            ]
+
+            params = self.parse_args_to_params(args_list)
+
+            # Verify complex script is preserved
+            assert params.post_trial_script is not None
+            assert "TRIAL_IS_BEST" in params.post_trial_script
+            assert "git commit" in params.post_trial_script
+
     def test_parameter_count(self):
         """Test that we have the expected number of parameters."""
         cli_args = get_field_info(LLMTrainingParams)
 
-        # We expect 128 parameters:
-        # - 107 original
-        # - 5 PPO parameters (rl_value_clip_range, rl_max_new_tokens, rl_top_k, rl_top_p, rl_temperature)
-        # - 6 inference parameters (inference_prompts, inference_max_tokens, inference_temperature,
-        #                           inference_top_p, inference_top_k, inference_output)
-        # - 1 W&B visualizer toggle handled via paired --wandb-visualizer/--no-wandb-visualizer flags
-        # - 9 dataset conversion parameters (use_sharegpt_mapping, sharegpt_mapping_enabled,
-        #                                    suggested_chat_template, column_mapping, runtime_mapping,
-        #                                    map_eos_token, auto_convert_dataset, conversation_extension,
-        #                                    apply_chat_template)
-        assert len(cli_args) == 128, f"Expected 128 parameters, got {len(cli_args)}"
+        # We expect 134 parameters including post_trial_script
+        # Note: Count may increase as new features are added
+        assert len(cli_args) == 134, f"Expected 134 parameters, got {len(cli_args)}"

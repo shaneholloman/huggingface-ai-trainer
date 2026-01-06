@@ -7,6 +7,7 @@ This package provides consolidated utilities that were previously spread across
 compatibility layer for legacy imports under `autotrain.utils.sweep`.
 """
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -125,6 +126,18 @@ class ParameterRange:
 
 
 @dataclass
+class TrialInfo:
+    """Information about a completed trial, passed to post_trial_callback."""
+
+    trial_number: int
+    params: Dict[str, Any]
+    metric_value: float
+    output_dir: Optional[str] = None
+    is_best: bool = False
+    all_metrics: Optional[Dict[str, float]] = None
+
+
+@dataclass
 class SweepConfig:
     """Configuration for hyperparameter sweep."""
 
@@ -144,6 +157,9 @@ class SweepConfig:
     wandb_project: Optional[str] = None  # W&B project name for sweep
     wandb_entity: Optional[str] = None  # W&B entity (team/username)
     wandb_sweep_id: Optional[str] = None  # Existing sweep ID to continue
+    # Post-trial callback for custom actions (git commit, notifications, etc.)
+    post_trial_callback: Optional[Callable[["TrialInfo"], None]] = None
+    post_trial_script: Optional[str] = None  # Shell script to run after each trial
 
 
 class SweepResult:
@@ -257,6 +273,62 @@ class HyperparameterSweep:
         self.train_function = train_function
         self.results = []
         self.best_value_history = []  # Track best value over time for early stopping
+        self._best_value = None  # Track best value seen so far
+
+    def _run_post_trial_actions(self, trial_info: TrialInfo) -> None:
+        """
+        Run post-trial actions: callback and/or script.
+
+        Args:
+            trial_info: Information about the completed trial
+        """
+        # Run Python callback if provided
+        if self.config.post_trial_callback:
+            try:
+                self.config.post_trial_callback(trial_info)
+            except Exception as e:
+                logger.warning(f"Post-trial callback failed for trial {trial_info.trial_number}: {e}")
+
+        # Run shell script if provided
+        if self.config.post_trial_script:
+            import subprocess
+
+            try:
+                # Pass trial info as environment variables
+                env = {
+                    **dict(os.environ),
+                    "TRIAL_NUMBER": str(trial_info.trial_number),
+                    "TRIAL_METRIC_VALUE": str(trial_info.metric_value),
+                    "TRIAL_IS_BEST": str(trial_info.is_best).lower(),
+                    "TRIAL_OUTPUT_DIR": trial_info.output_dir or "",
+                    "TRIAL_PARAMS": str(trial_info.params),
+                }
+                result = subprocess.run(
+                    self.config.post_trial_script,
+                    shell=True,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minute timeout
+                )
+                if result.returncode != 0:
+                    logger.warning(
+                        f"Post-trial script failed for trial {trial_info.trial_number}: {result.stderr}"
+                    )
+                else:
+                    logger.info(f"Post-trial script completed for trial {trial_info.trial_number}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Post-trial script timed out for trial {trial_info.trial_number}")
+            except Exception as e:
+                logger.warning(f"Post-trial script failed for trial {trial_info.trial_number}: {e}")
+
+    def _is_better(self, value: float, best_value: float) -> bool:
+        """Check if value is better than best_value based on direction."""
+        if best_value is None:
+            return True
+        if self.config.direction == "minimize":
+            return value < best_value
+        return value > best_value
 
     def run(self, train_function: Callable = None) -> SweepResult:
         """Run the hyperparameter sweep."""
@@ -517,6 +589,20 @@ class HyperparameterSweep:
                     except Exception:
                         pass
 
+            # Run post-trial actions (callback and/or script)
+            is_best = self._is_better(result, self._best_value)
+            if is_best:
+                self._best_value = result
+
+            trial_info = TrialInfo(
+                trial_number=trial.number,
+                params=params,
+                metric_value=result,
+                output_dir=self.config.output_dir,
+                is_best=is_best,
+            )
+            self._run_post_trial_actions(trial_info)
+
             return result
 
         study = optuna.create_study(direction=self.config.direction)
@@ -548,7 +634,7 @@ class HyperparameterSweep:
         best_value = float("inf") if self.config.direction == "minimize" else float("-inf")
         best_params = None
 
-        for _ in range(self.config.n_trials):
+        for trial_number in range(self.config.n_trials):
             params = {}
 
             # Handle both list and dict parameter formats
@@ -575,22 +661,33 @@ class HyperparameterSweep:
                 value = train_function(params)
                 trials.append({"params": params, "value": value})
 
+                is_best = False
                 if self.config.direction == "minimize":
                     if value < best_value:
                         best_value = value
                         best_params = params
+                        is_best = True
                 else:
                     if value > best_value:
                         best_value = value
                         best_params = params
+                        is_best = True
+
+                # Run post-trial actions
+                trial_info = TrialInfo(
+                    trial_number=trial_number,
+                    params=params,
+                    metric_value=value,
+                    output_dir=self.config.output_dir,
+                    is_best=is_best,
+                )
+                self._run_post_trial_actions(trial_info)
 
                 # Check for early stopping
                 if self._should_stop_early(best_value):
                     break
             except Exception as e:
                 # Log the error but continue with other trials
-                from autotrain import logger
-
                 logger.error(f"Trial failed with params {params}: {str(e)}")
                 # Optionally add failed trial with None value
                 trials.append({"params": params, "value": None, "error": str(e)})
@@ -638,28 +735,39 @@ class HyperparameterSweep:
         best_value = float("inf") if self.config.direction == "minimize" else float("-inf")
         best_params = None
 
-        for param_values in itertools.product(*param_lists):
+        for trial_number, param_values in enumerate(itertools.product(*param_lists)):
             params = dict(zip(param_names, param_values))
             try:
                 value = train_function(params)
                 trials.append({"params": params, "value": value})
 
+                is_best = False
                 if self.config.direction == "minimize":
                     if value < best_value:
                         best_value = value
                         best_params = params
+                        is_best = True
                 else:
                     if value > best_value:
                         best_value = value
                         best_params = params
+                        is_best = True
+
+                # Run post-trial actions
+                trial_info = TrialInfo(
+                    trial_number=trial_number,
+                    params=params,
+                    metric_value=value,
+                    output_dir=self.config.output_dir,
+                    is_best=is_best,
+                )
+                self._run_post_trial_actions(trial_info)
 
                 # Check for early stopping
                 if self._should_stop_early(best_value):
                     break
             except Exception as e:
                 # Log the error but continue with other trials
-                from autotrain import logger
-
                 logger.error(f"Trial failed with params {params}: {str(e)}")
                 # Optionally add failed trial with None value
                 trials.append({"params": params, "value": None, "error": str(e)})
@@ -680,6 +788,8 @@ def run_autotrain_sweep(
     wandb_project: Optional[str] = None,
     wandb_entity: Optional[str] = None,
     wandb_sweep_id: Optional[str] = None,
+    post_trial_callback: Optional[Callable[["TrialInfo"], None]] = None,
+    post_trial_script: Optional[str] = None,
 ) -> SweepResult:
     """
     Convenience function to run hyperparameter sweep for AutoTrain.
@@ -693,6 +803,8 @@ def run_autotrain_sweep(
         n_trials: Number of trials to run
         backend: Sweep backend to use
         output_dir: Directory to save results
+        post_trial_callback: Python callback function called after each trial
+        post_trial_script: Shell script/command to run after each trial
 
     Returns:
         SweepResult with best parameters and trial history
@@ -746,6 +858,8 @@ def run_autotrain_sweep(
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_sweep_id=wandb_sweep_id,
+        post_trial_callback=post_trial_callback,
+        post_trial_script=post_trial_script,
     )
 
     sweep = HyperparameterSweep(config)
