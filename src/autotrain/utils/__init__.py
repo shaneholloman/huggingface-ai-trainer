@@ -312,9 +312,7 @@ class HyperparameterSweep:
                     timeout=300,  # 5 minute timeout
                 )
                 if result.returncode != 0:
-                    logger.warning(
-                        f"Post-trial script failed for trial {trial_info.trial_number}: {result.stderr}"
-                    )
+                    logger.warning(f"Post-trial script failed for trial {trial_info.trial_number}: {result.stderr}")
                 else:
                     logger.info(f"Post-trial script completed for trial {trial_info.trial_number}")
             except subprocess.TimeoutExpired:
