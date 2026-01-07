@@ -1111,7 +1111,7 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
     chat_format_map = {
         "chatml": "chatml",
         "zephyr": "zephyr",
-        "tokenizer": "chatml",  # Default to chatml for tokenizer
+        "tokenizer": "native",  # Use tokenizer's native apply_chat_template
         "alpaca": "alpaca",
         "vicuna": "vicuna",
         "llama": "llama",
