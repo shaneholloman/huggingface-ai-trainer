@@ -442,10 +442,11 @@ def train(config):
         save_training_params(config)
         logger.info("Pushing model to hub...")
         api = HfApi(token=config.token)
-        api.create_repo(repo_id=f"{config.username}/{config.project_name}", repo_type="model", private=True)
-        api.upload_folder(
-            folder_path=config.project_name, repo_id=f"{config.username}/{config.project_name}", repo_type="model"
-        )
+        # Use basename to handle cases where project_name is a full path
+        project_basename = os.path.basename(config.project_name.rstrip("/"))
+        repo_id = f"{config.username}/{project_basename}"
+        api.create_repo(repo_id=repo_id, repo_type="model", private=True)
+        api.upload_folder(folder_path=config.project_name, repo_id=repo_id, repo_type="model")
 
     pause_space(config)
 

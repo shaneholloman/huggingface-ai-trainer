@@ -361,9 +361,13 @@ class UploadLogs(TrainerCallback):
         if self.config.push_to_hub:
             if PartialState().process_index == 0:
                 self.api = HfApi(token=config.token)
-                self.api.create_repo(
-                    repo_id=f"{self.config.username}/{self.config.project_name}", repo_type="model", private=True
-                )
+                # Use repo_id if provided, otherwise construct from username and project basename
+                if getattr(self.config, "repo_id", None):
+                    self.repo_id = self.config.repo_id
+                else:
+                    project_basename = os.path.basename(self.config.project_name.rstrip("/"))
+                    self.repo_id = f"{self.config.username}/{project_basename}"
+                self.api.create_repo(repo_id=self.repo_id, repo_type="model", private=True)
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         if self.config.push_to_hub is False:
@@ -379,7 +383,7 @@ class UploadLogs(TrainerCallback):
                     try:
                         self.api.upload_folder(
                             folder_path=os.path.join(self.config.project_name, "runs"),
-                            repo_id=f"{self.config.username}/{self.config.project_name}",
+                            repo_id=self.repo_id,
                             path_in_repo="runs",
                         )
                     except Exception as e:

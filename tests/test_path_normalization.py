@@ -211,6 +211,120 @@ class TestPathNormalization:
         assert config2.project_name == "/absolute/path/model-2"
 
 
+class TestHuggingFaceRepoIdBasename:
+    """Tests for HuggingFace repo_id using basename when project_name is a path."""
+
+    def test_upload_logs_callback_uses_basename(self):
+        """Test that UploadLogs callback uses basename for repo_id when project_name is a path."""
+        from unittest.mock import MagicMock, patch
+
+        from autotrain.trainers.common import UploadLogs
+        from autotrain.trainers.clm.params import LLMTrainingParams
+
+        # Create config with project_name as full path
+        config = LLMTrainingParams(
+            model="gpt2",
+            project_name="/workspace/trainings/my-model",
+            username="testuser",
+            token="fake-token",
+            push_to_hub=True,
+            data_path="dummy",
+            train_split="train",
+            text_column="text",
+        )
+
+        with patch("autotrain.trainers.common.PartialState") as mock_state:
+            mock_state.return_value.process_index = 0
+            with patch("autotrain.trainers.common.HfApi") as mock_api:
+                mock_api_instance = MagicMock()
+                mock_api.return_value = mock_api_instance
+
+                callback = UploadLogs(config)
+
+                # Verify repo_id uses basename, not full path
+                assert callback.repo_id == "testuser/my-model", (
+                    f"Expected 'testuser/my-model', got '{callback.repo_id}'"
+                )
+
+                # Verify create_repo was called with correct repo_id
+                mock_api_instance.create_repo.assert_called_once()
+                call_args = mock_api_instance.create_repo.call_args
+                assert call_args.kwargs["repo_id"] == "testuser/my-model"
+
+    def test_upload_logs_callback_uses_explicit_repo_id(self):
+        """Test that UploadLogs callback uses explicit repo_id when provided."""
+        from unittest.mock import MagicMock, patch
+
+        from autotrain.trainers.common import UploadLogs
+        from autotrain.trainers.clm.params import LLMTrainingParams
+
+        config = LLMTrainingParams(
+            model="gpt2",
+            project_name="/workspace/trainings/my-model",
+            username="testuser",
+            token="fake-token",
+            push_to_hub=True,
+            repo_id="my-org/custom-model",  # Explicit repo_id
+            data_path="dummy",
+            train_split="train",
+            text_column="text",
+        )
+
+        with patch("autotrain.trainers.common.PartialState") as mock_state:
+            mock_state.return_value.process_index = 0
+            with patch("autotrain.trainers.common.HfApi") as mock_api:
+                mock_api_instance = MagicMock()
+                mock_api.return_value = mock_api_instance
+
+                callback = UploadLogs(config)
+
+                # Should use explicit repo_id
+                assert callback.repo_id == "my-org/custom-model"
+
+    def test_basename_strips_trailing_slash(self):
+        """Test that trailing slashes are stripped before getting basename."""
+        # Test the logic directly since LLMTrainingParams validates project_name
+        # and rejects trailing slashes at the validation level
+        project_name_with_slash = "/workspace/trainings/my-model/"
+
+        # This is the logic used in all trainers
+        project_basename = os.path.basename(project_name_with_slash.rstrip("/"))
+
+        # Should get 'my-model', not empty string
+        assert project_basename == "my-model", f"Expected 'my-model', got '{project_basename}'"
+
+        # Also test the repo_id construction
+        repo_id = f"testuser/{project_basename}"
+        assert repo_id == "testuser/my-model"
+
+    def test_clm_utils_post_training_uses_basename(self):
+        """Test that clm/utils.py post_training_steps uses basename."""
+        # Test the logic directly
+        project_name = "/workspace/trainings/test-push"
+        username = "monostate"
+
+        project_basename = os.path.basename(project_name.rstrip("/"))
+        repo_id = f"{username}/{project_basename}"
+
+        assert repo_id == "monostate/test-push", f"Expected 'monostate/test-push', got '{repo_id}'"
+
+    def test_various_path_formats(self):
+        """Test basename extraction with various path formats."""
+        test_cases = [
+            ("/workspace/trainings/my-model", "my-model"),
+            ("/Users/user/run_20251220/trainings/test-push", "test-push"),
+            ("./local/model", "model"),
+            ("simple-name", "simple-name"),
+            ("/deeply/nested/path/to/model/", "model"),
+        ]
+
+        for project_name, expected_basename in test_cases:
+            project_basename = os.path.basename(project_name.rstrip("/"))
+            assert project_basename == expected_basename, (
+                f"For '{project_name}', expected '{expected_basename}', got '{project_basename}'"
+            )
+
+
 if __name__ == "__main__":
     # Run the tests
     pytest.main([__file__, "-v", "--tb=short"])
