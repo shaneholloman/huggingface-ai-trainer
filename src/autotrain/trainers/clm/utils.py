@@ -485,8 +485,13 @@ def apply_chat_template_unified(
     from autotrain.rendering import Conversation, Message
 
     if config.trainer in ("default", "sft"):
-        # Check if dataset already has formatted text (from auto-conversion)
-        # If text column contains template tokens, it's already formatted
+        # Check if 'text' column already exists and is formatted (from auto-conversion or previous processing)
+        if "text" in example and isinstance(example["text"], str):
+            template_tokens = ["<bos>", "<start_of_turn>", "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<eos>"]
+            if any(token in example["text"] for token in template_tokens):
+                logger.debug("Skipping chat template - 'text' column already contains formatted text")
+                return example
+
         text_value = example.get(config.text_column, "")
 
         # First, check if we have a messages column (preferred source for conversion)
@@ -525,8 +530,8 @@ def apply_chat_template_unified(
         # Convert to Conversation object (preserving tool_calls if present)
         conversation = Conversation(messages=[_message_from_dict(m, Message) for m in messages])
 
-        # Render conversation
-        example[config.text_column] = renderer.render_conversation(conversation)
+        # Render conversation to 'text' column (preserve original messages)
+        example["text"] = renderer.render_conversation(conversation)
 
     elif config.trainer == "reward":
         if all(k in example.keys() for k in ("chosen", "rejected")):
@@ -637,10 +642,17 @@ def apply_chat_template(
     # kudos to Hugging Face H4 Team for this snippet
     # Using safe_apply_chat_template to handle tool role for models that don't support it (e.g., Gemma)
     if config.trainer in ("default", "sft"):
+        # Check if 'text' column already exists and is formatted
+        if "text" in example and isinstance(example["text"], str):
+            template_tokens = ["<bos>", "<start_of_turn>", "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<eos>"]
+            if any(token in example["text"] for token in template_tokens):
+                return example
+
         messages = example[config.text_column]
         if isinstance(messages, str):
             messages = ast.literal_eval(messages)
-        example[config.text_column] = safe_apply_chat_template(
+        # Create 'text' column instead of overwriting text_column (preserve original messages)
+        example["text"] = safe_apply_chat_template(
             tokenizer, messages, tokenize=False, add_generation_prompt=False
         )
 
@@ -1192,13 +1204,14 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
 
         renderer = get_renderer(chat_format, tokenizer)
 
-        # Apply rendering to datasets
+        # Apply rendering to datasets (disable cache to ensure fresh processing after code changes)
         train_data = train_data.map(
             apply_chat_template_unified,
             fn_kwargs={
                 "renderer": renderer,
                 "config": config,
             },
+            load_from_cache_file=False,
         )
         if config.valid_split is not None:
             valid_data = valid_data.map(
@@ -1207,6 +1220,7 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                     "renderer": renderer,
                     "config": config,
                 },
+                load_from_cache_file=False,
             )
     elif config.chat_template:
         # Fall back to legacy implementation for custom templates
@@ -1217,6 +1231,7 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                 "tokenizer": tokenizer,
                 "config": config,
             },
+            load_from_cache_file=False,
         )
         if config.valid_split is not None:
             valid_data = valid_data.map(
@@ -1225,6 +1240,7 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                     "tokenizer": tokenizer,
                     "config": config,
                 },
+                load_from_cache_file=False,
             )
 
     # Save processed datasets if configured (Path 2 - normal training)
