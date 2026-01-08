@@ -31,10 +31,12 @@ class ChatFormat(Enum):
 class Message:
     """Represents a single message in a conversation."""
 
-    role: str  # "system", "user", "assistant"
+    role: str  # "system", "user", "assistant", "tool"
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
     weight: float = 1.0  # Token-level weight for training
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # For assistant messages that call tools
+    tool_call_id: Optional[str] = None  # For tool response messages
 
 
 @dataclass
@@ -50,8 +52,16 @@ class Conversation:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert conversation to dictionary."""
+        messages_list = []
+        for m in self.messages:
+            msg_dict = {"role": m.role, "content": m.content, "weight": m.weight}
+            if m.tool_calls:
+                msg_dict["tool_calls"] = m.tool_calls
+            if m.tool_call_id:
+                msg_dict["tool_call_id"] = m.tool_call_id
+            messages_list.append(msg_dict)
         return {
-            "messages": [{"role": m.role, "content": m.content, "weight": m.weight} for m in self.messages],
+            "messages": messages_list,
             "metadata": self.metadata,
         }
 
@@ -59,7 +69,14 @@ class Conversation:
     def from_dict(cls, data: Dict[str, Any]) -> "Conversation":
         """Create conversation from dictionary."""
         messages = [
-            Message(role=m["role"], content=m["content"], weight=m.get("weight", 1.0)) for m in data["messages"]
+            Message(
+                role=m["role"],
+                content=m["content"],
+                weight=m.get("weight", 1.0),
+                tool_calls=m.get("tool_calls"),
+                tool_call_id=m.get("tool_call_id"),
+            )
+            for m in data["messages"]
         ]
         return cls(messages=messages, metadata=data.get("metadata", {}))
 

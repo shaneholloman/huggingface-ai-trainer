@@ -849,3 +849,241 @@ class TestMessageAlternationFix:
         result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
         assert "Hello" in result
         assert "here" in result
+
+
+class TestToolCallsSerialization:
+    """Tests for tool_calls field serialization for models that don't support it natively."""
+
+    def test_serialize_tool_calls_basic(self):
+        """Test basic tool_calls serialization to content."""
+        from autotrain.rendering.utils import serialize_tool_calls_to_content
+
+        messages = [
+            {"role": "user", "content": "What's the weather?"},
+            {
+                "role": "assistant",
+                "content": "Let me check.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "Sunny, 20C", "tool_call_id": "call_123"},
+            {"role": "assistant", "content": "It's sunny and 20C in Paris."},
+        ]
+
+        serialized = serialize_tool_calls_to_content(messages)
+
+        # Assistant message should have tool call serialized into content
+        assert len(serialized) == 4
+        assert serialized[1]["role"] == "assistant"
+        assert "[Tool Call]" in serialized[1]["content"]
+        assert "get_weather" in serialized[1]["content"]
+        assert "Paris" in serialized[1]["content"]
+        # tool_calls field should be removed
+        assert "tool_calls" not in serialized[1]
+        # tool_call_id should be removed
+        assert "tool_call_id" not in serialized[2]
+
+    def test_serialize_tool_calls_preserves_content(self):
+        """Test that existing content is preserved when serializing tool_calls."""
+        from autotrain.rendering.utils import serialize_tool_calls_to_content
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "I'll search for that.",
+                "tool_calls": [
+                    {"function": {"name": "search", "arguments": '{"query": "weather"}'}}
+                ],
+            }
+        ]
+
+        serialized = serialize_tool_calls_to_content(messages)
+
+        # Original content should be preserved
+        assert "I'll search for that." in serialized[0]["content"]
+        # Tool call should be appended
+        assert "[Tool Call]" in serialized[0]["content"]
+        assert "search" in serialized[0]["content"]
+
+    def test_serialize_tool_calls_handles_none_content(self):
+        """Test serialization when content is None (common in OpenAI responses)."""
+        from autotrain.rendering.utils import serialize_tool_calls_to_content
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,  # OpenAI often sets content=None when tool_calls is present
+                "tool_calls": [
+                    {"function": {"name": "calculator", "arguments": '{"expr": "2+2"}'}}
+                ],
+            }
+        ]
+
+        serialized = serialize_tool_calls_to_content(messages)
+
+        # Should handle None content gracefully
+        assert serialized[0]["content"] is not None
+        assert "[Tool Call]" in serialized[0]["content"]
+        assert "calculator" in serialized[0]["content"]
+
+    def test_serialize_multiple_tool_calls(self):
+        """Test serialization of multiple tool calls in one message."""
+        from autotrain.rendering.utils import serialize_tool_calls_to_content
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "I'll check both.",
+                "tool_calls": [
+                    {"function": {"name": "get_weather", "arguments": '{"city": "Paris"}'}},
+                    {"function": {"name": "get_time", "arguments": '{"timezone": "Europe/Paris"}'}},
+                ],
+            }
+        ]
+
+        serialized = serialize_tool_calls_to_content(messages)
+
+        # Both tool calls should be serialized
+        content = serialized[0]["content"]
+        assert "get_weather" in content
+        assert "get_time" in content
+        assert content.count("[Tool Call]") == 2
+
+    def test_serialize_preserves_non_tool_messages(self):
+        """Test that messages without tool_calls are unchanged."""
+        from autotrain.rendering.utils import serialize_tool_calls_to_content
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+
+        serialized = serialize_tool_calls_to_content(messages)
+
+        assert serialized == messages
+
+    def test_check_tool_calls_support_gemma(self):
+        """Test that Gemma is correctly detected as NOT supporting tool_calls."""
+        from autotrain.rendering.utils import check_tool_calls_support
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
+        except Exception:
+            pytest.skip("Gemma tokenizer not available")
+
+        # Gemma should NOT support tool_calls field
+        assert check_tool_calls_support(tokenizer) == False
+
+    def test_check_tool_calls_support_qwen(self):
+        """Test that Qwen is correctly detected as supporting tool_calls natively."""
+        from autotrain.rendering.utils import check_tool_calls_support, safe_apply_chat_template
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+        except Exception:
+            pytest.skip("Qwen tokenizer not available")
+
+        # Qwen SHOULD support tool_calls field natively
+        assert check_tool_calls_support(tokenizer) == True
+
+        # Verify native format is used (not serialized to [Tool Call])
+        messages = [
+            {"role": "user", "content": "test"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"function": {"name": "my_function", "arguments": '{"arg": "value"}'}}
+                ],
+            },
+        ]
+
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+
+        # Should use native <tool_call> format, NOT [Tool Call] serialization
+        assert "[Tool Call]" not in result
+        assert "my_function" in result
+        # Qwen uses <tool_call> tags
+        assert "<tool_call>" in result or "tool_call" in result.lower()
+
+    def test_safe_apply_with_tool_calls_gemma(self):
+        """Test that safe_apply_chat_template serializes tool_calls for Gemma."""
+        from autotrain.rendering.utils import safe_apply_chat_template
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
+        except Exception:
+            pytest.skip("Gemma tokenizer not available")
+
+        messages = [
+            {"role": "user", "content": "Calculate 2+2"},
+            {
+                "role": "assistant",
+                "content": "Let me calculate.",
+                "tool_calls": [
+                    {"function": {"name": "calculator", "arguments": '{"expr": "2+2"}'}}
+                ],
+            },
+            {"role": "tool", "content": "4"},
+            {"role": "assistant", "content": "The answer is 4."},
+        ]
+
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+
+        # Tool call should be serialized to content
+        assert "[Tool Call]" in result
+        assert "calculator" in result
+        # Tool result should be converted
+        assert "[Tool Result]" in result
+
+    def test_message_with_tool_calls_preserved_in_dict(self):
+        """Test that Message and Conversation preserve tool_calls in to_dict/from_dict."""
+        from autotrain.rendering import Message, Conversation
+
+        # Create message with tool_calls
+        msg = Message(
+            role="assistant",
+            content="Let me check.",
+            tool_calls=[{"function": {"name": "test", "arguments": "{}"}}],
+        )
+
+        # Create conversation
+        conv = Conversation(messages=[msg])
+
+        # Convert to dict
+        data = conv.to_dict()
+
+        # Verify tool_calls is preserved
+        assert "tool_calls" in data["messages"][0]
+        assert data["messages"][0]["tool_calls"][0]["function"]["name"] == "test"
+
+        # Convert back from dict
+        conv2 = Conversation.from_dict(data)
+
+        # Verify tool_calls is restored
+        assert conv2.messages[0].tool_calls is not None
+        assert conv2.messages[0].tool_calls[0]["function"]["name"] == "test"
+
+    def test_message_with_tool_call_id_preserved(self):
+        """Test that tool_call_id is preserved in Message."""
+        from autotrain.rendering import Message, Conversation
+
+        msg = Message(
+            role="tool",
+            content="Result: 4",
+            tool_call_id="call_123",
+        )
+
+        conv = Conversation(messages=[msg])
+        data = conv.to_dict()
+
+        assert "tool_call_id" in data["messages"][0]
+        assert data["messages"][0]["tool_call_id"] == "call_123"
+
+        conv2 = Conversation.from_dict(data)
+        assert conv2.messages[0].tool_call_id == "call_123"

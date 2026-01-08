@@ -16,6 +16,9 @@ from .message_renderer import ChatFormat, Conversation, Message, RenderConfig, T
 # Cache for tool role support detection per tokenizer
 _tool_role_support_cache: Dict[str, bool] = {}
 
+# Cache for tool_calls field support detection per tokenizer
+_tool_calls_support_cache: Dict[str, bool] = {}
+
 
 def _get_tokenizer_id(tokenizer: AutoTokenizer) -> str:
     """Get a unique identifier for a tokenizer for caching."""
@@ -57,6 +60,119 @@ def check_tool_role_support(tokenizer: AutoTokenizer) -> bool:
 
     _tool_role_support_cache[tokenizer_id] = result
     return result
+
+
+def check_tool_calls_support(tokenizer: AutoTokenizer) -> bool:
+    """Check if a tokenizer's chat template supports the 'tool_calls' field.
+
+    Tests by attempting to render a minimal conversation with an assistant message
+    that has tool_calls. The result is cached per tokenizer for performance.
+
+    Args:
+        tokenizer: The tokenizer to check
+
+    Returns:
+        True if tokenizer supports tool_calls field, False otherwise
+    """
+    tokenizer_id = _get_tokenizer_id(tokenizer)
+
+    if tokenizer_id in _tool_calls_support_cache:
+        return _tool_calls_support_cache[tokenizer_id]
+
+    # Test with a minimal tool_calls message
+    test_messages = [
+        {"role": "user", "content": "test"},
+        {
+            "role": "assistant",
+            "content": None,  # Often None when tool_calls is present
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "test_func", "arguments": "{}"},
+                }
+            ],
+        },
+    ]
+
+    try:
+        result_text = tokenizer.apply_chat_template(test_messages, tokenize=False)
+        # Check if the tool call information appears in output (model handled it)
+        # If it just silently dropped it, we should serialize instead
+        if "test_func" in result_text or "call_123" in result_text:
+            result = True
+        else:
+            # Tokenizer didn't include tool_calls in output - doesn't support it
+            result = False
+    except Exception:
+        result = False
+
+    _tool_calls_support_cache[tokenizer_id] = result
+    return result
+
+
+def serialize_tool_calls_to_content(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Serialize tool_calls field into message content for models that don't support it natively.
+
+    This function:
+    1. Finds assistant messages with tool_calls field
+    2. Appends the tool calls as JSON to the message content
+    3. Returns messages without the tool_calls field (content contains the JSON)
+
+    Args:
+        messages: List of message dicts, potentially with tool_calls
+
+    Returns:
+        Messages with tool_calls serialized into content
+
+    Example:
+        Input:
+        {
+            "role": "assistant",
+            "content": "Let me check that for you.",
+            "tool_calls": [{"function": {"name": "search", "arguments": "{\"query\": \"weather\"}"}}]
+        }
+
+        Output:
+        {
+            "role": "assistant",
+            "content": "Let me check that for you.\n[Tool Call] {\"tool\": \"search\", \"arguments\": {\"query\": \"weather\"}}"
+        }
+    """
+    import json
+
+    processed = []
+    for msg in messages:
+        msg_copy = dict(msg)
+        tool_calls = msg_copy.pop("tool_calls", None)
+
+        if tool_calls and msg_copy.get("role") == "assistant":
+            content = msg_copy.get("content") or ""
+
+            # Serialize each tool call
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                tool_name = func.get("name", "unknown")
+
+                # Parse arguments if they're a string
+                args = func.get("arguments", "{}")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass  # Keep as string if can't parse
+
+                tool_json = json.dumps({"tool": tool_name, "arguments": args}, ensure_ascii=False)
+                content = f"{content}\n[Tool Call] {tool_json}" if content else f"[Tool Call] {tool_json}"
+
+            msg_copy["content"] = content.strip()
+
+        # Remove tool_call_id from tool response messages (handled separately by tool role conversion)
+        msg_copy.pop("tool_call_id", None)
+
+        processed.append(msg_copy)
+
+    return processed
 
 
 def preprocess_messages_for_tool_role(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -152,23 +268,24 @@ def fix_message_alternation(messages: List[Dict[str, str]]) -> List[Dict[str, st
 
 def safe_apply_chat_template(
     tokenizer: AutoTokenizer,
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     tokenize: bool = False,
     add_generation_prompt: bool = False,
     **kwargs,
 ) -> str:
-    """Safely apply chat template with automatic tool role and alternation handling.
+    """Safely apply chat template with automatic tool handling and alternation fixing.
 
     This function automatically:
-    1. Detects if the tokenizer supports the 'tool' role and converts if needed
-    2. Fixes alternation issues (consecutive same-role, missing user before assistant)
+    1. Detects if the tokenizer supports the 'tool_calls' field and serializes if needed
+    2. Detects if the tokenizer supports the 'tool' role and converts if needed
+    3. Fixes alternation issues (consecutive same-role, missing user before assistant)
 
     Use this instead of directly calling tokenizer.apply_chat_template() when
-    messages may have tool role or alternation issues.
+    messages may have tool_calls, tool role, or alternation issues.
 
     Args:
         tokenizer: The tokenizer to use
-        messages: List of message dicts with 'role' and 'content' keys
+        messages: List of message dicts with 'role', 'content', and optionally 'tool_calls' keys
         tokenize: Whether to return token IDs (default False for string output)
         add_generation_prompt: Whether to add generation prompt
         **kwargs: Additional arguments passed to apply_chat_template
@@ -179,14 +296,24 @@ def safe_apply_chat_template(
     Example:
         >>> messages = [
         ...     {"role": "user", "content": "What's 2+2?"},
-        ...     {"role": "assistant", "content": "Let me calculate"},
+        ...     {"role": "assistant", "content": "Let me calculate", "tool_calls": [...]},
         ...     {"role": "tool", "content": "4"},
         ...     {"role": "assistant", "content": "The answer is 4"}
         ... ]
-        >>> # For Gemma (no tool support): auto-converts tool to user
+        >>> # For Gemma (no tool support): auto-converts tool_calls to JSON in content
         >>> # For Llama 3.1+ (has tool support): uses native format
         >>> result = safe_apply_chat_template(tokenizer, messages)
     """
+    # Check if messages have tool_calls field
+    has_tool_calls = any(msg.get("tool_calls") for msg in messages)
+
+    # Only serialize tool_calls if present AND tokenizer doesn't support them natively
+    if has_tool_calls and not check_tool_calls_support(tokenizer):
+        from autotrain import logger
+
+        logger.debug("Tokenizer doesn't support 'tool_calls' field, serializing to content as JSON")
+        messages = serialize_tool_calls_to_content(messages)
+
     # Check if messages have tool role
     has_tool = any(msg.get("role") == "tool" for msg in messages)
 

@@ -397,6 +397,25 @@ def pause_endpoint(params):
     return r.json()
 
 
+def _message_from_dict(m, Message):
+    """
+    Create a Message object from a dict, preserving tool_calls and tool_call_id.
+
+    Args:
+        m (dict): Message dict with role, content, and optionally tool_calls/tool_call_id
+        Message: The Message class to instantiate
+
+    Returns:
+        Message: A Message object with all relevant fields preserved
+    """
+    return Message(
+        role=m["role"],
+        content=m.get("content") or "",  # Handle None content
+        tool_calls=m.get("tool_calls"),
+        tool_call_id=m.get("tool_call_id"),
+    )
+
+
 def apply_chat_template_unified(
     example,
     renderer,
@@ -456,8 +475,8 @@ def apply_chat_template_unified(
             logger.warning(f"Unexpected text column type: {type(text_value)}, skipping chat template")
             return example
 
-        # Convert to Conversation object
-        conversation = Conversation(messages=[Message(role=m["role"], content=m["content"]) for m in messages])
+        # Convert to Conversation object (preserving tool_calls if present)
+        conversation = Conversation(messages=[_message_from_dict(m, Message) for m in messages])
 
         # Render conversation
         example[config.text_column] = renderer.render_conversation(conversation)
@@ -483,16 +502,12 @@ def apply_chat_template_unified(
                     # It's a plain string response - convert to conversation format
                     rejected_messages = [{"role": "assistant", "content": rejected_messages}]
 
-            # Convert and render chosen
-            chosen_conv = Conversation(
-                messages=[Message(role=m["role"], content=m["content"]) for m in chosen_messages]
-            )
+            # Convert and render chosen (preserving tool_calls if present)
+            chosen_conv = Conversation(messages=[_message_from_dict(m, Message) for m in chosen_messages])
             example["chosen"] = renderer.render_conversation(chosen_conv)
 
-            # Convert and render rejected
-            rejected_conv = Conversation(
-                messages=[Message(role=m["role"], content=m["content"]) for m in rejected_messages]
-            )
+            # Convert and render rejected (preserving tool_calls if present)
+            rejected_conv = Conversation(messages=[_message_from_dict(m, Message) for m in rejected_messages])
             example["rejected"] = renderer.render_conversation(rejected_conv)
         else:
             raise ValueError(
@@ -528,23 +543,17 @@ def apply_chat_template_unified(
                         {"role": "assistant", "content": rejected_messages},
                     ]
 
-            # Extract prompt (all messages except last)
+            # Extract prompt (all messages except last, preserving tool_calls if present)
             prompt_messages = chosen_messages[:-1]
-            prompt_conv = Conversation(
-                messages=[Message(role=m["role"], content=m["content"]) for m in prompt_messages]
-            )
+            prompt_conv = Conversation(messages=[_message_from_dict(m, Message) for m in prompt_messages])
             example["prompt"] = renderer.render_conversation(prompt_conv)
 
-            # Render full chosen
-            chosen_conv = Conversation(
-                messages=[Message(role=m["role"], content=m["content"]) for m in chosen_messages]
-            )
+            # Render full chosen (preserving tool_calls if present)
+            chosen_conv = Conversation(messages=[_message_from_dict(m, Message) for m in chosen_messages])
             example["chosen"] = renderer.render_conversation(chosen_conv)
 
-            # Render full rejected
-            rejected_conv = Conversation(
-                messages=[Message(role=m["role"], content=m["content"]) for m in rejected_messages]
-            )
+            # Render full rejected (preserving tool_calls if present)
+            rejected_conv = Conversation(messages=[_message_from_dict(m, Message) for m in rejected_messages])
             example["rejected"] = renderer.render_conversation(rejected_conv)
         else:
             raise ValueError(
