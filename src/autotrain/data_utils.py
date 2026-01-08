@@ -105,9 +105,25 @@ def save_processed_dataset(
 
     # Convert to DataFrame for consistent handling
     if isinstance(dataset, pd.DataFrame):
-        df = dataset
+        df = dataset.copy()
     else:
         df = dataset.to_pandas() if hasattr(dataset, "to_pandas") else pd.DataFrame(dataset)
+
+    # Rename columns that could trigger auto-detection in other frameworks
+    # This prevents tools like Axolotl, LLaMA-Factory from picking 'messages' over 'text'
+    auto_detect_columns = {
+        "messages": "_original_messages",
+        "conversations": "_original_conversations",
+        "instruction": "_original_instruction",
+        "input": "_original_input",
+        "output": "_original_output",
+        "response": "_original_response",
+    }
+    for old_col, new_col in auto_detect_columns.items():
+        if old_col in df.columns and "text" in df.columns:
+            # Only rename if we have a 'text' column (processed data)
+            df = df.rename(columns={old_col: new_col})
+            logger.info(f"Renamed '{old_col}' to '{new_col}' to prevent auto-detection conflicts")
 
     # Estimate size
     dataset_size = estimate_dataset_size(df)
@@ -178,6 +194,26 @@ def save_processed_dataset(
                 result["hub_path"] = hub_repo
                 logger.info(f"Processed dataset pushed to Hub: {hub_repo} (private)")
 
+                # Also upload JSONL for easier inspection (only if not large)
+                if not is_large:
+                    try:
+                        import io
+
+                        api = HfApi(token=token)
+                        jsonl_buffer = io.BytesIO()
+                        df.to_json(jsonl_buffer, orient="records", lines=True, force_ascii=False)
+                        jsonl_buffer.seek(0)
+                        api.upload_file(
+                            path_or_fileobj=jsonl_buffer,
+                            path_in_repo=f"{split_name}.jsonl",
+                            repo_id=hub_repo,
+                            repo_type="dataset",
+                            token=token,
+                        )
+                        logger.info(f"JSONL file uploaded to Hub: {split_name}.jsonl")
+                    except Exception as jsonl_error:
+                        logger.warning(f"Could not upload JSONL file: {jsonl_error}")
+
                 # Create dataset card with processing info
                 try:
                     api = HfApi(token=token)
@@ -200,10 +236,24 @@ This dataset was automatically processed by [AITraining](https://github.com/mono
 - **Processed on**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 - **Project**: `{project_name}`
 
-## Processing
+## Columns
 
-This dataset has been processed with chat template application and format standardization.
-The original data structure has been preserved while applying necessary transformations for training.
+| Column | Description |
+|--------|-------------|
+| `text` | **Use this for training.** Processed text with chat template applied. |
+| `_original_*` | Original data preserved for reference (prefixed with `_` to prevent auto-detection). |
+
+## Processing Applied
+
+- Chat template formatting
+- Tool calls serialized to `[Tool Call] {{"tool": "name", "arguments": {{...}}}}`
+- Tool role converted to user with `[Tool Result]` prefix
+- Message alternation fixes for strict models
+
+## Files
+
+- `data/{split_name}-*.parquet` - Parquet format (used by `load_dataset`)
+{f'- `{split_name}.jsonl` - JSONL format for easy inspection' if not is_large else ''}
 
 ## Usage
 
@@ -211,6 +261,9 @@ The original data structure has been preserved while applying necessary transfor
 from datasets import load_dataset
 
 dataset = load_dataset("{hub_repo}", split="{split_name}")
+
+# For training, use the 'text' column
+texts = dataset["text"]
 ```
 
 ---
