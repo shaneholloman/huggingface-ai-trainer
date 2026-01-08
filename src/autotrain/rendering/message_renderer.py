@@ -388,10 +388,91 @@ class CustomRenderer(MessageRenderer):
 class TokenizerNativeRenderer(MessageRenderer):
     """Renderer that uses tokenizer's native apply_chat_template."""
 
+    def __init__(self, tokenizer: AutoTokenizer, config: RenderConfig):
+        super().__init__(tokenizer, config)
+        self._supports_tool_role: Optional[bool] = None  # Cached result
+
+    def _check_tool_role_support(self) -> bool:
+        """Check if the tokenizer's chat template supports the 'tool' role.
+
+        Tests by attempting to render a minimal conversation with a tool message.
+        The result is cached for performance.
+
+        Returns:
+            True if tokenizer supports tool role, False otherwise
+        """
+        if self._supports_tool_role is not None:
+            return self._supports_tool_role
+
+        # Test with a minimal tool conversation
+        test_messages = [
+            {"role": "user", "content": "test"},
+            {"role": "assistant", "content": "test"},
+            {"role": "tool", "content": "test"},
+            {"role": "assistant", "content": "test"},
+        ]
+
+        try:
+            self.tokenizer.apply_chat_template(test_messages, tokenize=False)
+            self._supports_tool_role = True
+        except Exception:
+            self._supports_tool_role = False
+
+        return self._supports_tool_role
+
+    def _preprocess_messages_for_alternation(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Preprocess messages to handle roles not supported by strict-alternation tokenizers.
+
+        Many tokenizers (e.g., Gemma) require strict user/assistant/user/assistant alternation
+        and don't support 'tool' or other roles. This method:
+        1. Converts 'tool' role to 'user' role with [Tool Result] prefix
+        2. Merges consecutive same-role messages to maintain alternation
+
+        This is ONLY called when the tokenizer doesn't support the tool role natively.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+
+        Returns:
+            Preprocessed messages compatible with strict-alternation tokenizers
+        """
+        if not messages:
+            return messages
+
+        processed = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"] or ""
+
+            # Convert 'tool' role to 'user' (tool responses are external input like user messages)
+            if role == "tool":
+                role = "user"
+                content = f"[Tool Result] {content}"
+
+            # Check if we need to merge with previous message (same role after conversion)
+            if processed and processed[-1]["role"] == role:
+                # Merge consecutive same-role messages
+                processed[-1]["content"] = f"{processed[-1]['content']}\n\n{content}"
+            else:
+                processed.append({"role": role, "content": content})
+
+        return processed
+
+    def _has_tool_messages(self, messages: List[Dict[str, str]]) -> bool:
+        """Check if any messages have the 'tool' role."""
+        return any(msg.get("role") == "tool" for msg in messages)
+
     def render_conversation(self, conversation: Conversation) -> str:
         """Render conversation using tokenizer's apply_chat_template."""
         # Convert to messages format
         messages = [{"role": msg.role, "content": msg.content} for msg in conversation.messages]
+
+        # Only preprocess if we have tool messages AND tokenizer doesn't support them
+        if self._has_tool_messages(messages) and not self._check_tool_role_support():
+            from autotrain import logger
+
+            logger.debug("Tokenizer doesn't support 'tool' role, converting to 'user' with [Tool Result] prefix")
+            messages = self._preprocess_messages_for_alternation(messages)
 
         # Use tokenizer's native chat template
         try:

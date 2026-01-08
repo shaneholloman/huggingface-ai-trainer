@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional, Union
 import pandas as pd
 from datasets import Dataset
 
+from autotrain.rendering.utils import safe_apply_chat_template
+
 
 # No vendor packages needed
 
@@ -566,15 +568,15 @@ def apply_chat_template(
         if not messages:
             return {output_column: ""}
 
-        # Apply chat template
+        # Apply chat template with automatic tool role handling
         try:
             # Check if last message is from assistant to decide on generation prompt
             add_generation_prompt = True
             if messages and messages[-1].get("role") == "assistant":
                 add_generation_prompt = False
 
-            formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=add_generation_prompt
+            formatted = safe_apply_chat_template(
+                tokenizer, messages, tokenize=False, add_generation_prompt=add_generation_prompt
             )
             return {output_column: formatted}
         except Exception as e:
@@ -768,6 +770,9 @@ def apply_chat_template_with_mapping(
                 if conversations and conversations[-1].get("from") in ["gpt", "assistant", "model", "bot"]:
                     add_generation_prompt = False
 
+                # Note: ShareGPT format uses "from"/"value" keys, not standard "role"/"content"
+                # safe_apply_chat_template handles standard messages format, so we use raw call here
+                # ShareGPT typically doesn't have tool role, but Unsloth handles the mapping
                 formatted = tokenizer.apply_chat_template(
                     conversations, tokenize=False, add_generation_prompt=add_generation_prompt
                 )
@@ -994,8 +999,8 @@ def formatting_prompts_func(
                     if isinstance(last_msg, dict) and last_msg.get("role") != "assistant":
                         add_generation_prompt = True
 
-                text = tokenizer.apply_chat_template(
-                    convo, tokenize=False, add_generation_prompt=add_generation_prompt
+                text = safe_apply_chat_template(
+                    tokenizer, convo, tokenize=False, add_generation_prompt=add_generation_prompt
                 )
                 texts.append(text)
             except Exception as e:
@@ -1017,7 +1022,9 @@ def formatting_prompts_func(
                 if isinstance(last_msg, dict) and last_msg.get("role") != "assistant":
                     add_generation_prompt = True
 
-            text = tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=add_generation_prompt)
+            text = safe_apply_chat_template(
+                tokenizer, convo, tokenize=False, add_generation_prompt=add_generation_prompt
+            )
         except Exception as e:
             logger.warning(f"Failed to apply chat template: {e}")
             text = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in convo])

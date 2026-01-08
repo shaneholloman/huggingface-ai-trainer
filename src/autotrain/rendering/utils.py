@@ -13,6 +13,140 @@ from transformers import AutoTokenizer
 from .message_renderer import ChatFormat, Conversation, Message, RenderConfig, TokenWeight, get_renderer
 
 
+# Cache for tool role support detection per tokenizer
+_tool_role_support_cache: Dict[str, bool] = {}
+
+
+def _get_tokenizer_id(tokenizer: AutoTokenizer) -> str:
+    """Get a unique identifier for a tokenizer for caching."""
+    if hasattr(tokenizer, "name_or_path"):
+        return tokenizer.name_or_path
+    return str(id(tokenizer))
+
+
+def check_tool_role_support(tokenizer: AutoTokenizer) -> bool:
+    """Check if a tokenizer's chat template supports the 'tool' role.
+
+    Tests by attempting to render a minimal conversation with a tool message.
+    The result is cached per tokenizer for performance.
+
+    Args:
+        tokenizer: The tokenizer to check
+
+    Returns:
+        True if tokenizer supports tool role, False otherwise
+    """
+    tokenizer_id = _get_tokenizer_id(tokenizer)
+
+    if tokenizer_id in _tool_role_support_cache:
+        return _tool_role_support_cache[tokenizer_id]
+
+    # Test with a minimal tool conversation
+    test_messages = [
+        {"role": "user", "content": "test"},
+        {"role": "assistant", "content": "test"},
+        {"role": "tool", "content": "test"},
+        {"role": "assistant", "content": "test"},
+    ]
+
+    try:
+        tokenizer.apply_chat_template(test_messages, tokenize=False)
+        result = True
+    except Exception:
+        result = False
+
+    _tool_role_support_cache[tokenizer_id] = result
+    return result
+
+
+def preprocess_messages_for_tool_role(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Preprocess messages to handle 'tool' role for tokenizers that don't support it.
+
+    This function:
+    1. Converts 'tool' role to 'user' role with [Tool Result] prefix
+    2. Merges consecutive same-role messages to maintain strict alternation
+
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys
+
+    Returns:
+        Preprocessed messages compatible with strict-alternation tokenizers
+    """
+    if not messages:
+        return messages
+
+    processed = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content") or ""
+
+        # Convert 'tool' role to 'user' (tool responses are external input like user messages)
+        if role == "tool":
+            role = "user"
+            content = f"[Tool Result] {content}"
+
+        # Check if we need to merge with previous message (same role after conversion)
+        if processed and processed[-1]["role"] == role:
+            # Merge consecutive same-role messages
+            processed[-1]["content"] = f"{processed[-1]['content']}\n\n{content}"
+        else:
+            processed.append({"role": role, "content": content})
+
+    return processed
+
+
+def safe_apply_chat_template(
+    tokenizer: AutoTokenizer,
+    messages: List[Dict[str, str]],
+    tokenize: bool = False,
+    add_generation_prompt: bool = False,
+    **kwargs,
+) -> str:
+    """Safely apply chat template with automatic tool role handling.
+
+    This function automatically detects if the tokenizer supports the 'tool' role
+    and preprocesses messages if needed. Use this instead of directly calling
+    tokenizer.apply_chat_template() when messages may contain tool role.
+
+    Args:
+        tokenizer: The tokenizer to use
+        messages: List of message dicts with 'role' and 'content' keys
+        tokenize: Whether to return token IDs (default False for string output)
+        add_generation_prompt: Whether to add generation prompt
+        **kwargs: Additional arguments passed to apply_chat_template
+
+    Returns:
+        Formatted conversation string (or token IDs if tokenize=True)
+
+    Example:
+        >>> messages = [
+        ...     {"role": "user", "content": "What's 2+2?"},
+        ...     {"role": "assistant", "content": "Let me calculate"},
+        ...     {"role": "tool", "content": "4"},
+        ...     {"role": "assistant", "content": "The answer is 4"}
+        ... ]
+        >>> # For Gemma (no tool support): auto-converts tool to user
+        >>> # For Llama 3.1+ (has tool support): uses native format
+        >>> result = safe_apply_chat_template(tokenizer, messages)
+    """
+    # Check if messages have tool role
+    has_tool = any(msg.get("role") == "tool" for msg in messages)
+
+    # Only preprocess if we have tool messages AND tokenizer doesn't support them
+    if has_tool and not check_tool_role_support(tokenizer):
+        from autotrain import logger
+
+        logger.debug("Tokenizer doesn't support 'tool' role, converting to 'user' with [Tool Result] prefix")
+        messages = preprocess_messages_for_tool_role(messages)
+
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=tokenize,
+        add_generation_prompt=add_generation_prompt,
+        **kwargs,
+    )
+
+
 def build_generation_prompt(
     messages: Union[List[Dict[str, str]], Conversation],
     format: Union[ChatFormat, str] = ChatFormat.CHATML,

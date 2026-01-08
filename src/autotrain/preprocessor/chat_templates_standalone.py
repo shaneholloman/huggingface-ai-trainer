@@ -4,6 +4,11 @@ This file works without GPU dependencies.
 
 Source: Extracted from unsloth/chat_templates.py
 Total templates: 32
+
+NOTE: These templates are used for LISTING available templates only.
+The actual message formatting uses:
+- CUDA: Unsloth's get_chat_template()
+- CPU/MPS: Tokenizer's native template via safe_apply_chat_template()
 """
 
 # Chat templates dictionary

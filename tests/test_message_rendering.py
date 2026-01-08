@@ -425,3 +425,284 @@ def test_custom_renderer(tokenizer):
     assert "System: Be helpful" in rendered
     assert "Human: Hello" in rendered
     assert "AI: Hi there" in rendered
+
+
+class TestToolRoleConversion:
+    """Tests for tool role conversion in TokenizerNativeRenderer.
+
+    Gemma and other models require strict user/assistant alternation and don't
+    support 'tool' role. These tests verify that tool messages are correctly
+    converted to user messages when the tokenizer doesn't support them.
+    """
+
+    def test_check_tool_role_support_gemma(self):
+        """Test that Gemma is correctly detected as NOT supporting tool role."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        # Use Gemma tokenizer which doesn't support tool role
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
+        except Exception:
+            pytest.skip("Gemma tokenizer not available")
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        # Gemma should NOT support tool role
+        assert renderer._check_tool_role_support() == False
+
+    def test_check_tool_role_support_caching(self, tokenizer):
+        """Test that tool role support check is cached."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        # First call should set the cache
+        result1 = renderer._check_tool_role_support()
+        assert renderer._supports_tool_role is not None
+
+        # Second call should use cache (same result)
+        result2 = renderer._check_tool_role_support()
+        assert result1 == result2
+
+    def test_preprocess_tool_role_to_user(self, tokenizer):
+        """Test that tool role is converted to user role."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        messages = [
+            {"role": "user", "content": "What is 2+2?"},
+            {"role": "assistant", "content": "Let me calculate that."},
+            {"role": "tool", "content": "Result: 4"},
+            {"role": "assistant", "content": "The answer is 4."},
+        ]
+
+        processed = renderer._preprocess_messages_for_alternation(messages)
+
+        # Should have 4 messages (tool converted to user)
+        assert len(processed) == 4
+        # Tool message should now be user with [Tool Result] prefix
+        assert processed[2]["role"] == "user"
+        assert processed[2]["content"] == "[Tool Result] Result: 4"
+
+    def test_preprocess_merges_consecutive_same_role(self, tokenizer):
+        """Test that consecutive same-role messages are merged."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        # Two consecutive user messages (e.g., user + tool converted to user)
+        messages = [
+            {"role": "user", "content": "First message"},
+            {"role": "user", "content": "Second message"},
+            {"role": "assistant", "content": "Response"},
+        ]
+
+        processed = renderer._preprocess_messages_for_alternation(messages)
+
+        # Should merge the two user messages
+        assert len(processed) == 2
+        assert "First message" in processed[0]["content"]
+        assert "Second message" in processed[0]["content"]
+
+    def test_preprocess_complex_tool_sequence(self, tokenizer):
+        """Test complex sequence with multiple tool calls."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        messages = [
+            {"role": "user", "content": "Check the weather"},
+            {"role": "assistant", "content": "Checking..."},
+            {"role": "tool", "content": "Weather: sunny"},
+            {"role": "tool", "content": "Temp: 20C"},  # Multiple tool results
+            {"role": "assistant", "content": "It's sunny and 20C"},
+        ]
+
+        processed = renderer._preprocess_messages_for_alternation(messages)
+
+        # user, assistant, user (merged tools), assistant = 4 messages
+        assert len(processed) == 4
+        # Both tool results should be merged into one user message
+        assert "[Tool Result] Weather: sunny" in processed[2]["content"]
+        assert "[Tool Result] Temp: 20C" in processed[2]["content"]
+
+    def test_preprocess_preserves_system_role(self, tokenizer):
+        """Test that system role is preserved."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        messages = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+        ]
+
+        processed = renderer._preprocess_messages_for_alternation(messages)
+
+        assert len(processed) == 3
+        assert processed[0]["role"] == "system"
+        assert processed[0]["content"] == "You are helpful"
+
+    def test_preprocess_handles_empty_messages(self, tokenizer):
+        """Test handling of empty message list."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        processed = renderer._preprocess_messages_for_alternation([])
+        assert processed == []
+
+    def test_preprocess_handles_none_content(self, tokenizer):
+        """Test handling of None content in messages."""
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": None},  # Some APIs return None for empty
+            {"role": "tool", "content": "Result"},
+            {"role": "assistant", "content": "Done"},
+        ]
+
+        processed = renderer._preprocess_messages_for_alternation(messages)
+
+        # Should handle None gracefully
+        assert len(processed) == 4
+        assert processed[1]["content"] == ""  # None converted to empty string
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("transformers", reason="transformers not available"),
+        reason="requires transformers"
+    )
+    def test_render_with_tool_role_gemma_style(self):
+        """Test rendering with tool role using a tokenizer that requires alternation.
+
+        This simulates what happens when training data with tool messages is used
+        with Gemma or similar models that require strict alternation.
+        """
+        from autotrain.rendering.message_renderer import TokenizerNativeRenderer
+
+        # Use GPT2 as a stand-in (it doesn't have a chat template, but that's ok)
+        tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer.pad_token = tokenizer.eos_token
+
+        config = RenderConfig(format=ChatFormat.NATIVE)
+        renderer = TokenizerNativeRenderer(tokenizer, config)
+
+        conv = Conversation(
+            messages=[
+                Message(role="user", content="Calculate 2+2"),
+                Message(role="assistant", content="Let me use a calculator"),
+                Message(role="tool", content="4"),
+                Message(role="assistant", content="The result is 4"),
+            ]
+        )
+
+        # This should not raise an error
+        rendered = renderer.render_conversation(conv)
+
+        # The tool message should be converted to user format
+        assert "[Tool Result]" in rendered or "4" in rendered
+
+
+class TestSafeApplyChatTemplate:
+    """Tests for the safe_apply_chat_template centralized utility."""
+
+    def test_safe_apply_preserves_native_tool_support(self):
+        """Test that models with native tool support keep tool messages as-is."""
+        from autotrain.rendering.utils import safe_apply_chat_template, check_tool_role_support
+
+        # Qwen supports tool role natively
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+        except Exception:
+            pytest.skip("Qwen tokenizer not available")
+
+        # Verify Qwen supports tool
+        assert check_tool_role_support(tokenizer) == True
+
+        messages = [
+            {"role": "user", "content": "Calculate 2+2"},
+            {"role": "assistant", "content": "Let me use a tool"},
+            {"role": "tool", "content": "4"},
+            {"role": "assistant", "content": "The answer is 4"},
+        ]
+
+        # Should NOT add [Tool Result] prefix for models that support tool natively
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+        assert "[Tool Result]" not in result
+
+    def test_safe_apply_converts_for_gemma(self):
+        """Test that Gemma gets tool messages converted."""
+        from autotrain.rendering.utils import safe_apply_chat_template, check_tool_role_support
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
+        except Exception:
+            pytest.skip("Gemma tokenizer not available")
+
+        # Verify Gemma doesn't support tool
+        assert check_tool_role_support(tokenizer) == False
+
+        messages = [
+            {"role": "user", "content": "Calculate 2+2"},
+            {"role": "assistant", "content": "Let me calculate"},
+            {"role": "tool", "content": "Result: 4"},
+            {"role": "assistant", "content": "The answer is 4"},
+        ]
+
+        # Should convert tool to user with [Tool Result] prefix
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+        assert "[Tool Result]" in result
+        assert "Result: 4" in result
+
+    def test_safe_apply_no_tool_messages_unchanged(self):
+        """Test that messages without tool role are unchanged."""
+        from autotrain.rendering.utils import safe_apply_chat_template
+
+        # Use a tokenizer with a chat template
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+        except Exception:
+            pytest.skip("Qwen tokenizer not available")
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+
+        # Should work normally without any conversion
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+        assert "Hello" in result
+        assert "Hi there" in result
+
+    def test_cache_is_used(self):
+        """Test that tool role support detection is cached."""
+        from autotrain.rendering.utils import _tool_role_support_cache, check_tool_role_support
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-1b-it")
+        except Exception:
+            pytest.skip("Gemma tokenizer not available")
+
+        # First call populates cache
+        result1 = check_tool_role_support(tokenizer)
+
+        # Check cache has the entry
+        tokenizer_id = tokenizer.name_or_path
+        assert tokenizer_id in _tool_role_support_cache
+
+        # Second call uses cache
+        result2 = check_tool_role_support(tokenizer)
+        assert result1 == result2

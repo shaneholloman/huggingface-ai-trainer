@@ -13,6 +13,7 @@ from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_t
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from autotrain import is_unsloth_available, logger
+from autotrain.rendering.utils import safe_apply_chat_template
 from autotrain.trainers.clm.callbacks import LoadBestPeftModelCallback, SavePeftModelCallback
 from autotrain.trainers.common import (
     ALLOW_REMOTE_CODE,
@@ -578,12 +579,13 @@ def apply_chat_template(
         ValueError: If the required keys are not found in the example for "reward", "dpo", or "orpo" trainers.
     """
     # kudos to Hugging Face H4 Team for this snippet
+    # Using safe_apply_chat_template to handle tool role for models that don't support it (e.g., Gemma)
     if config.trainer in ("default", "sft"):
         messages = example[config.text_column]
         if isinstance(messages, str):
             messages = ast.literal_eval(messages)
-        example[config.text_column] = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=False
+        example[config.text_column] = safe_apply_chat_template(
+            tokenizer, messages, tokenize=False, add_generation_prompt=False
         )
 
     elif config.trainer == "reward":
@@ -600,8 +602,8 @@ def apply_chat_template(
             if config.chat_template == "zephyr" and rejected_messages[0]["role"] != "system":
                 rejected_messages.insert(0, {"role": "system", "content": ""})
 
-            example["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
-            example["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+            example["chosen"] = safe_apply_chat_template(tokenizer, chosen_messages, tokenize=False)
+            example["rejected"] = safe_apply_chat_template(tokenizer, rejected_messages, tokenize=False)
         else:
             raise ValueError(
                 f"Could not format example as dialogue for `rm/orpo` task! Require `[chosen, rejected]` keys but found {list(example.keys())}"
@@ -619,9 +621,9 @@ def apply_chat_template(
                 prompt_messages.insert(0, {"role": "system", "content": ""})
             chosen_messages = example["chosen"][-1:]
             rejected_messages = example["rejected"][-1:]
-            example["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
-            example["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
-            example["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False)
+            example["chosen"] = safe_apply_chat_template(tokenizer, chosen_messages, tokenize=False)
+            example["rejected"] = safe_apply_chat_template(tokenizer, rejected_messages, tokenize=False)
+            example["prompt"] = safe_apply_chat_template(tokenizer, prompt_messages, tokenize=False)
     else:
         raise ValueError(
             f"Could not format example as dialogue for `dpo` task! Require `[chosen, rejected]` keys but found {list(example.keys())}"

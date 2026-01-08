@@ -39,11 +39,14 @@ from .utils import (
     apply_token_weights,
     build_generation_prompt,
     build_supervised_example,
+    check_tool_role_support,
     convert_dataset_to_conversations,
     create_chat_template,
     detect_chat_format,
     get_stop_sequences,
     parse_response,
+    preprocess_messages_for_tool_role,
+    safe_apply_chat_template,
 )
 
 
@@ -76,4 +79,8 @@ __all__ = [
     "detect_chat_format",
     "convert_dataset_to_conversations",
     "create_chat_template",
+    # Tool role handling
+    "safe_apply_chat_template",
+    "check_tool_role_support",
+    "preprocess_messages_for_tool_role",
 ]
