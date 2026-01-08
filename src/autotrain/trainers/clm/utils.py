@@ -391,11 +391,11 @@ def create_model_card(config):
     if config.peft:
         extra_params_list.append(f"| LoRA Rank | {getattr(config, 'lora_r', 'N/A')} |")
         extra_params_list.append(f"| LoRA Alpha | {getattr(config, 'lora_alpha', 'N/A')} |")
-    if getattr(config, 'quantization', None):
+    if getattr(config, "quantization", None):
         extra_params_list.append(f"| Quantization | {config.quantization} |")
-    if getattr(config, 'chat_template', None):
+    if getattr(config, "chat_template", None):
         extra_params_list.append(f"| Chat Template | {config.chat_template} |")
-    if getattr(config, 'gradient_accumulation', None):
+    if getattr(config, "gradient_accumulation", None):
         extra_params_list.append(f"| Gradient Accumulation | {config.gradient_accumulation} |")
 
     extra_params = "\n".join(extra_params_list)
@@ -409,12 +409,12 @@ def create_model_card(config):
         base_model=base_model,
         project_name=project_name,
         model_name=model_name,
-        trainer=getattr(config, 'trainer', 'sft'),
+        trainer=getattr(config, "trainer", "sft"),
         data_path=data_path_display,
-        epochs=getattr(config, 'epochs', 'N/A'),
-        lr=getattr(config, 'lr', 'N/A'),
-        batch_size=getattr(config, 'batch_size', 'N/A'),
-        block_size=getattr(config, 'block_size', 'N/A'),
+        epochs=getattr(config, "epochs", "N/A"),
+        lr=getattr(config, "lr", "N/A"),
+        batch_size=getattr(config, "batch_size", "N/A"),
+        block_size=getattr(config, "block_size", "N/A"),
         extra_params=extra_params,
     )
     return model_card.strip()
@@ -479,7 +479,7 @@ def strip_bos_token(text: str, tokenizer) -> str:
 
     bos_token = getattr(tokenizer, "bos_token", None)
     if bos_token and text.startswith(bos_token):
-        text = text[len(bos_token):]
+        text = text[len(bos_token) :]
         # Also strip any leading newline that might follow BOS
         if text.startswith("\n"):
             text = text[1:]
@@ -518,11 +518,25 @@ def apply_chat_template_unified(
             # Llama 3: <|begin_of_text|>, <|start_header_id|>, <|eot_id|>, <|end_header_id|>
             # Zephyr/Phi-3: <|user|>, <|assistant|>, <|system|>, <|end|>
             template_tokens = [
-                "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>",  # Gemma
-                "<|im_start|>", "<|im_end|>", "<|endoftext|>",  # ChatML/Qwen
-                "<s>", "</s>", "[INST]", "[/INST]",  # Llama 2/Mistral
-                "<|begin_of_text|>", "<|start_header_id|>", "<|eot_id|>", "<|end_header_id|>",  # Llama 3
-                "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",  # Zephyr/Phi-3
+                "<bos>",
+                "<eos>",
+                "<start_of_turn>",
+                "<end_of_turn>",  # Gemma
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|endoftext|>",  # ChatML/Qwen
+                "<s>",
+                "</s>",
+                "[INST]",
+                "[/INST]",  # Llama 2/Mistral
+                "<|begin_of_text|>",
+                "<|start_header_id|>",
+                "<|eot_id|>",
+                "<|end_header_id|>",  # Llama 3
+                "<|user|>",
+                "<|assistant|>",
+                "<|system|>",
+                "<|end|>",  # Zephyr/Phi-3
             ]
             if any(token in example["text"] for token in template_tokens):
                 logger.debug("Skipping chat template - 'text' column already contains formatted text")
@@ -543,11 +557,25 @@ def apply_chat_template_unified(
             # Llama 3: <|begin_of_text|>, <|start_header_id|>, <|eot_id|>, <|end_header_id|>
             # Zephyr/Phi-3: <|user|>, <|assistant|>, <|system|>, <|end|>
             template_tokens = [
-                "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>",  # Gemma
-                "<|im_start|>", "<|im_end|>", "<|endoftext|>",  # ChatML/Qwen
-                "<s>", "</s>", "[INST]", "[/INST]",  # Llama 2/Mistral
-                "<|begin_of_text|>", "<|start_header_id|>", "<|eot_id|>", "<|end_header_id|>",  # Llama 3
-                "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",  # Zephyr/Phi-3
+                "<bos>",
+                "<eos>",
+                "<start_of_turn>",
+                "<end_of_turn>",  # Gemma
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|endoftext|>",  # ChatML/Qwen
+                "<s>",
+                "</s>",
+                "[INST]",
+                "[/INST]",  # Llama 2/Mistral
+                "<|begin_of_text|>",
+                "<|start_header_id|>",
+                "<|eot_id|>",
+                "<|end_header_id|>",  # Llama 3
+                "<|user|>",
+                "<|assistant|>",
+                "<|system|>",
+                "<|end|>",  # Zephyr/Phi-3
             ]
             if any(token in text_value for token in template_tokens):
                 # Already formatted, skip processing
@@ -703,11 +731,25 @@ def apply_chat_template(
             # Llama 3: <|begin_of_text|>, <|start_header_id|>, <|eot_id|>, <|end_header_id|>
             # Zephyr/Phi-3: <|user|>, <|assistant|>, <|system|>, <|end|>
             template_tokens = [
-                "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>",  # Gemma
-                "<|im_start|>", "<|im_end|>", "<|endoftext|>",  # ChatML/Qwen
-                "<s>", "</s>", "[INST]", "[/INST]",  # Llama 2/Mistral
-                "<|begin_of_text|>", "<|start_header_id|>", "<|eot_id|>", "<|end_header_id|>",  # Llama 3
-                "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",  # Zephyr/Phi-3
+                "<bos>",
+                "<eos>",
+                "<start_of_turn>",
+                "<end_of_turn>",  # Gemma
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|endoftext|>",  # ChatML/Qwen
+                "<s>",
+                "</s>",
+                "[INST]",
+                "[/INST]",  # Llama 2/Mistral
+                "<|begin_of_text|>",
+                "<|start_header_id|>",
+                "<|eot_id|>",
+                "<|end_header_id|>",  # Llama 3
+                "<|user|>",
+                "<|assistant|>",
+                "<|system|>",
+                "<|end|>",  # Zephyr/Phi-3
             ]
             if any(token in example["text"] for token in template_tokens):
                 return example
@@ -717,9 +759,7 @@ def apply_chat_template(
             messages = ast.literal_eval(messages)
         # Create 'text' column instead of overwriting text_column (preserve original messages)
         # Strip BOS token to prevent double BOS when tokenizer adds it during training
-        rendered_text = safe_apply_chat_template(
-            tokenizer, messages, tokenize=False, add_generation_prompt=False
-        )
+        rendered_text = safe_apply_chat_template(tokenizer, messages, tokenize=False, add_generation_prompt=False)
         example["text"] = strip_bos_token(rendered_text, tokenizer)
 
     elif config.trainer == "reward":
@@ -1225,9 +1265,7 @@ def get_tokenizer(config):
     # Different models use different bos tokens: <bos> (Gemma), <s> (Mistral/Llama2), <|begin_of_text|> (Llama3)
     if config.chat_template and hasattr(tokenizer, "add_bos_token") and tokenizer.add_bos_token:
         try:
-            test_output = tokenizer.apply_chat_template(
-                [{"role": "user", "content": "test"}], tokenize=False
-            )
+            test_output = tokenizer.apply_chat_template([{"role": "user", "content": "test"}], tokenize=False)
             # Check if chat template starts with the tokenizer's bos_token
             bos = tokenizer.bos_token
             if bos and test_output.startswith(bos):
@@ -1271,11 +1309,25 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
             # Llama 3: <|begin_of_text|>, <|start_header_id|>, <|eot_id|>, <|end_header_id|>
             # Zephyr/Phi-3: <|user|>, <|assistant|>, <|system|>, <|end|>
             template_tokens = [
-                "<bos>", "<eos>", "<start_of_turn>", "<end_of_turn>",  # Gemma
-                "<|im_start|>", "<|im_end|>", "<|endoftext|>",  # ChatML/Qwen
-                "<s>", "</s>", "[INST]", "[/INST]",  # Llama 2/Mistral
-                "<|begin_of_text|>", "<|start_header_id|>", "<|eot_id|>", "<|end_header_id|>",  # Llama 3
-                "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",  # Zephyr/Phi-3
+                "<bos>",
+                "<eos>",
+                "<start_of_turn>",
+                "<end_of_turn>",  # Gemma
+                "<|im_start|>",
+                "<|im_end|>",
+                "<|endoftext|>",  # ChatML/Qwen
+                "<s>",
+                "</s>",
+                "[INST]",
+                "[/INST]",  # Llama 2/Mistral
+                "<|begin_of_text|>",
+                "<|start_header_id|>",
+                "<|eot_id|>",
+                "<|end_header_id|>",  # Llama 3
+                "<|user|>",
+                "<|assistant|>",
+                "<|system|>",
+                "<|end|>",  # Zephyr/Phi-3
             ]
             if any(token in sample_text for token in template_tokens):
                 logger.info(

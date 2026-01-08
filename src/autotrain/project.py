@@ -40,12 +40,12 @@ def _create_text_from_messages(example):
 
 from autotrain import logger
 from autotrain.backends.base import AVAILABLE_HARDWARE
-from autotrain.data_utils import save_processed_datasets
 from autotrain.backends.endpoints import EndpointsRunner
 from autotrain.backends.local import LocalRunner
 from autotrain.backends.ngc import NGCRunner
 from autotrain.backends.nvcf import NVCFRunner
 from autotrain.backends.spaces import SpaceRunner
+from autotrain.data_utils import save_processed_datasets
 from autotrain.dataset import (
     AutoTrainDataset,
     AutoTrainImageClassificationDataset,
