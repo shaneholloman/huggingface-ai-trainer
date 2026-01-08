@@ -119,7 +119,12 @@ def train(config):
     config = utils.configure_block_size(config, tokenizer)
 
     # SFTConfig-specific parameters
-    training_args["dataset_text_field"] = config.text_column
+    # Use 'text' column if chat template was applied (creates 'text' from source column)
+    # Otherwise use the configured text_column
+    if config.chat_template and "text" in train_data.column_names:
+        training_args["dataset_text_field"] = "text"
+    else:
+        training_args["dataset_text_field"] = config.text_column
 
     # Enable generation during evaluation if BLEU/ROUGE metrics are requested
     generation_metrics = []
