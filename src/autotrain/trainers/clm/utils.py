@@ -487,6 +487,152 @@ def strip_bos_token(text: str, tokenizer) -> str:
     return text
 
 
+def get_model_turn_markers(tokenizer):
+    """
+    Detect the turn markers used by the model's chat template.
+
+    Returns a dict with:
+    - start_turn: Token(s) that start a turn (e.g., '<start_of_turn>', '[INST]')
+    - end_turn: Token(s) that end a turn (e.g., '<end_of_turn>', '[/INST]')
+    - eos_token: The model's EOS token
+
+    Different models use different conventions:
+    - Gemma: <start_of_turn>role ... <end_of_turn>
+    - Llama 2/Mistral: [INST] ... [/INST]
+    - Llama 3: <|start_header_id|>role<|end_header_id|> ... <|eot_id|>
+    - ChatML: <|im_start|>role ... <|im_end|>
+    """
+    markers = {
+        "start_turn": None,
+        "end_turn": None,
+        "eos_token": getattr(tokenizer, "eos_token", None),
+    }
+
+    try:
+        # Generate a sample to detect markers
+        test_msgs = [{"role": "user", "content": "test"}]
+        sample = tokenizer.apply_chat_template(test_msgs, tokenize=False, add_generation_prompt=False)
+
+        # Detect turn markers based on common patterns
+        if "<start_of_turn>" in sample and "<end_of_turn>" in sample:
+            markers["start_turn"] = "<start_of_turn>"
+            markers["end_turn"] = "<end_of_turn>"
+        elif "<|start_header_id|>" in sample and "<|eot_id|>" in sample:
+            markers["start_turn"] = "<|start_header_id|>"
+            markers["end_turn"] = "<|eot_id|>"
+        elif "[INST]" in sample and "[/INST]" in sample:
+            markers["start_turn"] = "[INST]"
+            markers["end_turn"] = "[/INST]"
+        elif "<|im_start|>" in sample and "<|im_end|>" in sample:
+            markers["start_turn"] = "<|im_start|>"
+            markers["end_turn"] = "<|im_end|>"
+        elif "<|user|>" in sample and "<|end|>" in sample:
+            markers["start_turn"] = "<|user|>"
+            markers["end_turn"] = "<|end|>"
+
+    except Exception as e:
+        logger.debug(f"Could not detect turn markers: {e}")
+
+    return markers
+
+
+def validate_and_fix_turn_markers(tokenizer, train_data, valid_data, config):
+    """
+    Validate and fix turn markers in the dataset to match the model's expected format.
+
+    Some datasets may be processed with one model's tokenizer but trained on another.
+    This function detects mismatches and fixes them.
+
+    For example:
+    - Dataset processed with google/gemma uses <eos> as EOS
+    - But unsloth/gemma uses <end_of_turn> as EOS
+    - This mismatch causes the model to not stop generating properly
+    - We fix by ensuring turn markers match what the model expects
+    """
+    if len(train_data) == 0:
+        return train_data, valid_data
+
+    sample_text = train_data[0].get(config.text_column, "")
+    if not isinstance(sample_text, str):
+        return train_data, valid_data
+
+    # Get the model's expected markers from its chat template
+    model_markers = get_model_turn_markers(tokenizer)
+    model_eos = model_markers.get("eos_token")
+    model_end_turn = model_markers.get("end_turn")
+    model_start_turn = model_markers.get("start_turn")
+
+    if not model_end_turn:
+        return train_data, valid_data
+
+    # Detect what markers the dataset is using
+    # Common patterns to check
+    marker_patterns = {
+        "gemma": {"start": "<start_of_turn>", "end": "<end_of_turn>"},
+        "llama3": {"start": "<|start_header_id|>", "end": "<|eot_id|>"},
+        "llama2": {"start": "[INST]", "end": "[/INST]"},
+        "chatml": {"start": "<|im_start|>", "end": "<|im_end|>"},
+        "zephyr": {"start": "<|user|>", "end": "<|end|>"},
+    }
+
+    dataset_format = None
+    for fmt, markers in marker_patterns.items():
+        if markers["end"] in sample_text:
+            dataset_format = fmt
+            break
+
+    if not dataset_format:
+        logger.debug("Could not detect dataset turn marker format")
+        return train_data, valid_data
+
+    dataset_markers = marker_patterns[dataset_format]
+
+    # Detect model format
+    model_format = None
+    for fmt, markers in marker_patterns.items():
+        if markers["end"] == model_end_turn:
+            model_format = fmt
+            break
+
+    if not model_format:
+        logger.debug(f"Could not detect model turn marker format (end_turn={model_end_turn})")
+        return train_data, valid_data
+
+    # If formats match, no fix needed
+    if dataset_format == model_format:
+        logger.debug(f"Dataset and model both use {dataset_format} format, no fix needed")
+        return train_data, valid_data
+
+    # Formats don't match - need to fix
+    logger.warning(
+        f"Turn marker mismatch detected: dataset uses {dataset_format} format, "
+        f"model expects {model_format} format. Fixing..."
+    )
+
+    old_start = dataset_markers["start"]
+    old_end = dataset_markers["end"]
+    new_start = marker_patterns[model_format]["start"]
+    new_end = marker_patterns[model_format]["end"]
+
+    def fix_turn_markers(example):
+        text = example.get(config.text_column, "")
+        if isinstance(text, str):
+            # Replace turn markers
+            text = text.replace(old_start, new_start)
+            text = text.replace(old_end, new_end)
+            example[config.text_column] = text
+        return example
+
+    logger.info(f"Replacing {repr(old_start)} -> {repr(new_start)}, {repr(old_end)} -> {repr(new_end)}")
+
+    train_data = train_data.map(fix_turn_markers, load_from_cache_file=False)
+    if valid_data is not None:
+        valid_data = valid_data.map(fix_turn_markers, load_from_cache_file=False)
+
+    logger.info("Turn markers fixed successfully")
+    return train_data, valid_data
+
+
 def apply_chat_template_unified(
     example,
     renderer,
@@ -1279,19 +1425,9 @@ def get_tokenizer(config):
     if config.padding in ("left", "right"):
         tokenizer.padding_side = config.padding
 
-    # Disable add_bos_token when using chat templates that already include bos_token
-    # This prevents double bos tokens in the training data
-    # Different models use different bos tokens: <bos> (Gemma), <s> (Mistral/Llama2), <|begin_of_text|> (Llama3)
-    if config.chat_template and hasattr(tokenizer, "add_bos_token") and tokenizer.add_bos_token:
-        try:
-            test_output = tokenizer.apply_chat_template([{"role": "user", "content": "test"}], tokenize=False)
-            # Check if chat template starts with the tokenizer's bos_token
-            bos = tokenizer.bos_token
-            if bos and test_output.startswith(bos):
-                tokenizer.add_bos_token = False
-                logger.info(f"Disabled add_bos_token (chat template already includes {repr(bos)})")
-        except Exception:
-            pass  # If test fails, leave default behavior
+    # NOTE: We no longer modify add_bos_token here.
+    # Instead, we strip BOS from the text column in process_data_with_chat_template.
+    # This ensures the saved tokenizer retains its original settings for correct inference.
 
     return tokenizer
 
@@ -1352,61 +1488,46 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                 logger.info(
                     "Dataset already has formatted text column (from auto-conversion), skipping chat template processing"
                 )
-                # Strip BOS from existing data to prevent double BOS during training
-                # This handles all tokenizers (including Llama 3 which lacks add_bos_token)
-                bos = getattr(tokenizer, "bos_token", None)
-                if bos and sample_text.startswith(bos):
-                    logger.info(f"Stripping BOS token from already-formatted data to prevent double BOS")
+                # Skip to end of function where BOS stripping and turn marker validation happens
+                already_formatted = True
+            else:
+                already_formatted = False
+        else:
+            already_formatted = False
+    else:
+        already_formatted = False
 
-                    def strip_existing_bos(example):
-                        if "text" in example and isinstance(example["text"], str):
-                            example["text"] = strip_bos_token(example["text"], tokenizer)
-                        return example
+    # Only apply chat template if not already formatted
+    if not already_formatted:
+        # Map legacy chat template names to new ChatFormat
+        chat_format_map = {
+            "chatml": "chatml",
+            "zephyr": "zephyr",
+            "tokenizer": "native",  # Use tokenizer's native apply_chat_template
+            "alpaca": "alpaca",
+            "vicuna": "vicuna",
+            "llama": "llama",
+            "mistral": "mistral",
+        }
 
-                    train_data = train_data.map(strip_existing_bos, load_from_cache_file=False)
-                    if valid_data is not None:
-                        valid_data = valid_data.map(strip_existing_bos, load_from_cache_file=False)
+        if config.chat_template and config.chat_template.lower() in chat_format_map:
+            from autotrain.rendering import ChatFormat, get_renderer
 
-                return train_data, valid_data
+            logger.info(f"Applying chat template: {config.chat_template}")
+            logger.info("For ORPO/DPO, `prompt` will be extracted from chosen messages")
 
-    # Map legacy chat template names to new ChatFormat
-    chat_format_map = {
-        "chatml": "chatml",
-        "zephyr": "zephyr",
-        "tokenizer": "native",  # Use tokenizer's native apply_chat_template
-        "alpaca": "alpaca",
-        "vicuna": "vicuna",
-        "llama": "llama",
-        "mistral": "mistral",
-    }
+            # Get the appropriate renderer
+            format_name = chat_format_map[config.chat_template.lower()]
+            try:
+                chat_format = ChatFormat[format_name.upper()]
+            except KeyError:
+                logger.warning(f"Unknown chat format {format_name}, defaulting to ChatML")
+                chat_format = ChatFormat.CHATML
 
-    if config.chat_template and config.chat_template.lower() in chat_format_map:
-        from autotrain.rendering import ChatFormat, get_renderer
+            renderer = get_renderer(chat_format, tokenizer)
 
-        logger.info(f"Applying chat template: {config.chat_template}")
-        logger.info("For ORPO/DPO, `prompt` will be extracted from chosen messages")
-
-        # Get the appropriate renderer
-        format_name = chat_format_map[config.chat_template.lower()]
-        try:
-            chat_format = ChatFormat[format_name.upper()]
-        except KeyError:
-            logger.warning(f"Unknown chat format {format_name}, defaulting to ChatML")
-            chat_format = ChatFormat.CHATML
-
-        renderer = get_renderer(chat_format, tokenizer)
-
-        # Apply rendering to datasets (disable cache to ensure fresh processing after code changes)
-        train_data = train_data.map(
-            apply_chat_template_unified,
-            fn_kwargs={
-                "renderer": renderer,
-                "config": config,
-            },
-            load_from_cache_file=False,
-        )
-        if config.valid_split is not None:
-            valid_data = valid_data.map(
+            # Apply rendering to datasets (disable cache to ensure fresh processing after code changes)
+            train_data = train_data.map(
                 apply_chat_template_unified,
                 fn_kwargs={
                     "renderer": renderer,
@@ -1414,19 +1535,19 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                 },
                 load_from_cache_file=False,
             )
-    elif config.chat_template:
-        # Fall back to legacy implementation for custom templates
-        logger.info("Using legacy chat template application")
-        train_data = train_data.map(
-            apply_chat_template,
-            fn_kwargs={
-                "tokenizer": tokenizer,
-                "config": config,
-            },
-            load_from_cache_file=False,
-        )
-        if config.valid_split is not None:
-            valid_data = valid_data.map(
+            if config.valid_split is not None:
+                valid_data = valid_data.map(
+                    apply_chat_template_unified,
+                    fn_kwargs={
+                        "renderer": renderer,
+                        "config": config,
+                    },
+                    load_from_cache_file=False,
+                )
+        elif config.chat_template:
+            # Fall back to legacy implementation for custom templates
+            logger.info("Using legacy chat template application")
+            train_data = train_data.map(
                 apply_chat_template,
                 fn_kwargs={
                     "tokenizer": tokenizer,
@@ -1434,6 +1555,37 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                 },
                 load_from_cache_file=False,
             )
+            if config.valid_split is not None:
+                valid_data = valid_data.map(
+                    apply_chat_template,
+                    fn_kwargs={
+                        "tokenizer": tokenizer,
+                        "config": config,
+                    },
+                    load_from_cache_file=False,
+                )
+
+    # Strip BOS from all processed data to prevent double BOS during training
+    # The tokenizer will add BOS during tokenization (if add_bos_token=True)
+    # This way the saved tokenizer retains original settings for correct inference
+    bos = getattr(tokenizer, "bos_token", None)
+    if bos and len(train_data) > 0:
+        sample_text = train_data[0].get(config.text_column, "")
+        if isinstance(sample_text, str) and sample_text.startswith(bos):
+            logger.info(f"Stripping BOS token from processed data to prevent double BOS during training")
+
+            def strip_bos_from_text(example):
+                if config.text_column in example and isinstance(example[config.text_column], str):
+                    example[config.text_column] = strip_bos_token(example[config.text_column], tokenizer)
+                return example
+
+            train_data = train_data.map(strip_bos_from_text, load_from_cache_file=False)
+            if valid_data is not None:
+                valid_data = valid_data.map(strip_bos_from_text, load_from_cache_file=False)
+
+    # Validate and fix turn markers based on model's expected EOS token
+    # This ensures the dataset uses the correct end-of-turn markers for the model
+    train_data, valid_data = validate_and_fix_turn_markers(tokenizer, train_data, valid_data, config)
 
     # Save processed datasets if configured (Path 2 - normal training)
     save_mode = getattr(config, "save_processed_data", "auto")
