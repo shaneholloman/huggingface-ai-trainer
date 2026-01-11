@@ -182,6 +182,49 @@ def train(config):
             training_args["packing"] = False
             logger.info("Packing disabled (CPU/other device)")
 
+    # ============================================================================
+    # Response-Only Loss (SFT best practice)
+    # ----------------------------------------------------------------------------
+    # Only compute loss on assistant/model responses, not on prompts/instructions.
+    # This prevents the model from overfitting to system prompts and echoing them.
+    #
+    # Two approaches supported:
+    # 1. TRL native: assistant_only_loss=True (requires {% generation %} tags in chat template)
+    # 2. Fallback: Add completion_mask to dataset (works with any model)
+    # ============================================================================
+    use_completion_mask = False  # Flag to add completion_mask during tokenization
+
+    if getattr(config, "response_only_loss", True) and config.chat_template:
+        # Check if chat template supports native generation tags
+        if utils.has_generation_tags(tokenizer):
+            training_args["assistant_only_loss"] = True
+            logger.info("Response-only loss enabled via TRL native assistant_only_loss=True")
+        else:
+            # Fall back to completion_mask approach
+            response_template = utils.get_response_template(tokenizer)
+            if response_template:
+                use_completion_mask = True
+                logger.info("Response-only loss enabled via completion_mask")
+                logger.info(f"Detected response template: {repr(response_template)}")
+            else:
+                logger.warning(
+                    "Could not detect response template for this model. "
+                    "Training will compute loss on entire sequence (including prompts). "
+                    "Set response_only_loss=False to suppress this warning."
+                )
+    elif not getattr(config, "response_only_loss", True):
+        logger.info("Response-only loss disabled by config (response_only_loss=False)")
+    else:
+        # No chat template - likely pretraining/completion style
+        logger.info("No chat template - computing loss on entire sequence")
+
+    # Add completion_mask to dataset if needed (for models without {% generation %} tags)
+    if use_completion_mask:
+        response_template = utils.get_response_template(tokenizer)
+        train_data = utils.add_completion_mask(train_data, tokenizer, response_template, config.text_column)
+        if valid_data is not None:
+            valid_data = utils.add_completion_mask(valid_data, tokenizer, response_template, config.text_column)
+
     args = SFTConfig(**training_args)
 
     model = utils.get_model(config, tokenizer)

@@ -536,6 +536,199 @@ def get_model_turn_markers(tokenizer):
     return markers
 
 
+def get_response_template(tokenizer):
+    """
+    Get the response template for DataCollatorForCompletionOnlyLM.
+
+    This template marks where the assistant/model response begins in the chat format.
+    Used to mask loss on user/system tokens so the model only learns to predict responses.
+
+    Different models use different templates:
+    - Gemma: '<start_of_turn>model\n'
+    - Llama 3: '<|start_header_id|>assistant<|end_header_id|>\n\n'
+    - ChatML/Qwen: '<|im_start|>assistant\n'
+    - Llama 2/Mistral: '[/INST] '
+    - Phi/Zephyr: '<|assistant|>\n'
+
+    Returns:
+        str or None: The response template string, or None if not detected
+    """
+    try:
+        # Generate a sample with assistant response to detect the template
+        test_msgs = [
+            {"role": "user", "content": "test"},
+            {"role": "assistant", "content": "response"},
+        ]
+        sample = tokenizer.apply_chat_template(test_msgs, tokenize=False, add_generation_prompt=False)
+
+        # Detect response template based on common patterns
+        # Order matters - check more specific patterns first
+
+        # Gemma format
+        if "<start_of_turn>model\n" in sample:
+            return "<start_of_turn>model\n"
+
+        # Llama 3 format
+        if "<|start_header_id|>assistant<|end_header_id|>" in sample:
+            # Find the exact format including newlines
+            if "<|start_header_id|>assistant<|end_header_id|>\n\n" in sample:
+                return "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            return "<|start_header_id|>assistant<|end_header_id|>\n"
+
+        # ChatML/Qwen format
+        if "<|im_start|>assistant\n" in sample:
+            return "<|im_start|>assistant\n"
+        if "<|im_start|>assistant" in sample:
+            return "<|im_start|>assistant\n"
+
+        # Llama 2/Mistral format - response comes after [/INST]
+        if "[/INST]" in sample:
+            return "[/INST] "
+
+        # Phi/Zephyr format
+        if "<|assistant|>\n" in sample:
+            return "<|assistant|>\n"
+        if "<|assistant|>" in sample:
+            return "<|assistant|>\n"
+
+        # Fallback: try to find "assistant" marker
+        if "assistant" in sample.lower():
+            logger.warning(
+                "Could not detect exact response template, using generic 'assistant'. "
+                "Consider setting response_template manually for best results."
+            )
+
+    except Exception as e:
+        logger.debug(f"Could not detect response template: {e}")
+
+    return None
+
+
+def has_generation_tags(tokenizer):
+    """
+    Check if the tokenizer's chat template supports {% generation %} tags.
+
+    TRL's assistant_only_loss=True requires chat templates with {% generation %} tags
+    to automatically create assistant masks. Models without these tags need to use
+    DataCollatorForCompletionOnlyLM instead.
+
+    Returns:
+        bool: True if chat template supports generation tags, False otherwise
+    """
+    try:
+        template = getattr(tokenizer, "chat_template", None)
+        if template is None:
+            return False
+
+        # Check for both variations of the generation tag
+        has_tag = "{% generation %}" in template or "{%generation%}" in template
+        has_endtag = "{% endgeneration %}" in template or "{%endgeneration%}" in template
+
+        return has_tag and has_endtag
+
+    except Exception as e:
+        logger.debug(f"Could not check for generation tags: {e}")
+        return False
+
+
+def add_completion_mask(dataset, tokenizer, response_template, text_column="text"):
+    """
+    Add completion_mask to dataset for response-only training.
+
+    The completion_mask marks which tokens are part of the assistant response (1)
+    vs. which are part of prompts/instructions (0). TRL's DataCollatorForLanguageModeling
+    uses this mask to set labels to -100 for non-completion tokens.
+
+    Args:
+        dataset: HuggingFace dataset
+        tokenizer: The tokenizer
+        response_template: String that marks start of assistant response (e.g., "<start_of_turn>model\n")
+        text_column: Name of the text column
+
+    Returns:
+        Dataset with added completion_mask column
+    """
+    # Tokenize the response template to get its token IDs
+    response_template_ids = tokenizer.encode(response_template, add_special_tokens=False)
+    template_len = len(response_template_ids)
+
+    logger.info(f"Response template '{repr(response_template)}' -> token IDs: {response_template_ids}")
+
+    def add_mask(example):
+        text = example.get(text_column, "")
+        if not text:
+            return {"completion_mask": []}
+
+        # Tokenize the full text
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+
+        # Create mask: 0 for prompt, 1 for completion
+        mask = [0] * len(tokens)
+
+        # Find all occurrences of response template and mark everything after as completion
+        # until the next user turn or end of sequence
+        i = 0
+        in_completion = False
+        while i < len(tokens):
+            # Check if we're at the start of a response template
+            if tokens[i : i + template_len] == response_template_ids:
+                # Skip the template itself (don't include it in completion)
+                i += template_len
+                in_completion = True
+                continue
+
+            if in_completion:
+                mask[i] = 1
+
+            i += 1
+
+        # For multi-turn, we need to detect when completion ends (next user turn)
+        # The response template marks the START of each assistant turn
+        # So we mark from template end until the next template (which would be user template)
+        # Actually, let's be smarter - mark from response_template to end_of_turn
+
+        # Get the end turn marker for this model
+        end_turn_marker = None
+        markers = get_model_turn_markers(tokenizer)
+        if markers.get("end_turn"):
+            end_turn_marker = markers["end_turn"]
+            end_turn_ids = tokenizer.encode(end_turn_marker, add_special_tokens=False)
+
+            # Re-process with proper turn boundaries
+            mask = [0] * len(tokens)
+            i = 0
+            while i < len(tokens):
+                # Check if at response template start
+                if tokens[i : i + template_len] == response_template_ids:
+                    i += template_len  # Skip template
+                    # Mark everything until end_of_turn as completion
+                    while i < len(tokens):
+                        if tokens[i : i + len(end_turn_ids)] == end_turn_ids:
+                            # Include the end_of_turn token in completion
+                            for j in range(len(end_turn_ids)):
+                                if i + j < len(tokens):
+                                    mask[i + j] = 1
+                            i += len(end_turn_ids)
+                            break
+                        mask[i] = 1
+                        i += 1
+                else:
+                    i += 1
+
+        return {"completion_mask": mask}
+
+    logger.info("Adding completion_mask to dataset for response-only training...")
+    dataset = dataset.map(add_mask, desc="Adding completion_mask")
+
+    # Log sample to verify
+    if len(dataset) > 0:
+        sample_mask = dataset[0].get("completion_mask", [])
+        completion_ratio = sum(sample_mask) / len(sample_mask) if sample_mask else 0
+        logger.info(f"Sample completion_mask: {completion_ratio:.1%} of tokens are completion")
+
+    return dataset
+
+
 def validate_and_fix_turn_markers(tokenizer, train_data, valid_data, config):
     """
     Validate and fix turn markers in the dataset to match the model's expected format.

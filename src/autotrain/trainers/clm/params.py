@@ -134,6 +134,11 @@ class LLMTrainingParams(AutoTrainParams):
         None,
         title="Template for chat-based models, options include: None, zephyr, chatml, or tokenizer (default: auto-selected based on trainer type)",
     )
+    response_only_loss: bool = Field(
+        True,
+        title="Compute loss only on assistant/model responses, not on prompts/instructions. "
+        "This is the recommended practice for SFT to prevent overfitting to system prompts.",
+    )
 
     # peft
     quantization: Optional[str] = Field(None, title="Quantization method to use (e.g., 'int4', 'int8', or None)")
