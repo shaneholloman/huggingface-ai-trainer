@@ -669,7 +669,23 @@ def add_completion_mask(dataset, tokenizer, response_template, text_column="text
     response_template_ids = tokenizer.encode(response_template, add_special_tokens=False)
     template_len = len(response_template_ids)
 
+    # For flexible matching: extract base template (without trailing newlines)
+    # This handles cases where the template may have variable newlines (\n, \n\n, \n\n\n)
+    base_template_str = response_template.rstrip("\n")
+    base_template_ids = tokenizer.encode(base_template_str, add_special_tokens=False)
+    base_template_len = len(base_template_ids)
+
+    # Get newline tokens for this tokenizer (they vary by model)
+    newline_tokens = set()
+    for nl in ["\n", "\n\n", "\n\n\n"]:
+        nl_ids = tokenizer.encode(nl, add_special_tokens=False)
+        if len(nl_ids) == 1:
+            newline_tokens.add(nl_ids[0])
+
     logger.info(f"Response template '{repr(response_template)}' -> token IDs: {response_template_ids}")
+    logger.info(
+        f"Base template '{repr(base_template_str)}' -> IDs: {base_template_ids}, newline tokens: {newline_tokens}"
+    )
 
     def add_mask(example):
         text = example.get(text_column, "")
@@ -682,43 +698,26 @@ def add_completion_mask(dataset, tokenizer, response_template, text_column="text
         # Create mask: 0 for prompt, 1 for completion
         mask = [0] * len(tokens)
 
-        # Find all occurrences of response template and mark everything after as completion
-        # until the next user turn or end of sequence
-        i = 0
-        in_completion = False
-        while i < len(tokens):
-            # Check if we're at the start of a response template
-            if tokens[i : i + template_len] == response_template_ids:
-                # Skip the template itself (don't include it in completion)
-                i += template_len
-                in_completion = True
-                continue
-
-            if in_completion:
-                mask[i] = 1
-
-            i += 1
-
-        # For multi-turn, we need to detect when completion ends (next user turn)
-        # The response template marks the START of each assistant turn
-        # So we mark from template end until the next template (which would be user template)
-        # Actually, let's be smarter - mark from response_template to end_of_turn
-
         # Get the end turn marker for this model
-        end_turn_marker = None
         markers = get_model_turn_markers(tokenizer)
+        end_turn_ids = None
         if markers.get("end_turn"):
-            end_turn_marker = markers["end_turn"]
-            end_turn_ids = tokenizer.encode(end_turn_marker, add_special_tokens=False)
+            end_turn_ids = tokenizer.encode(markers["end_turn"], add_special_tokens=False)
 
-            # Re-process with proper turn boundaries
-            mask = [0] * len(tokens)
-            i = 0
-            while i < len(tokens):
-                # Check if at response template start
-                if tokens[i : i + template_len] == response_template_ids:
-                    i += template_len  # Skip template
-                    # Mark everything until end_of_turn as completion
+        # Find all occurrences of response template and mark everything after as completion
+        # Use FLEXIBLE matching: match base template then skip any newline tokens
+        # This handles variable newlines (\n, \n\n, \n\n\n) that different templates produce
+        i = 0
+        while i < len(tokens):
+            # Check if we're at the start of a response template (flexible match on base pattern)
+            if tokens[i : i + base_template_len] == base_template_ids:
+                # Skip the base template
+                i += base_template_len
+                # Skip any newline tokens (handles \n, \n\n, \n\n\n variations)
+                while i < len(tokens) and tokens[i] in newline_tokens:
+                    i += 1
+                # Mark everything until end_of_turn as completion
+                if end_turn_ids:
                     while i < len(tokens):
                         if tokens[i : i + len(end_turn_ids)] == end_turn_ids:
                             # Include the end_of_turn token in completion
@@ -730,7 +729,12 @@ def add_completion_mask(dataset, tokenizer, response_template, text_column="text
                         mask[i] = 1
                         i += 1
                 else:
-                    i += 1
+                    # No end turn marker - mark until end of sequence
+                    while i < len(tokens):
+                        mask[i] = 1
+                        i += 1
+            else:
+                i += 1
 
         return {"completion_mask": mask}
 
