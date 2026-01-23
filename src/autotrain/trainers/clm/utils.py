@@ -575,20 +575,37 @@ def get_response_template(tokenizer):
                 return "<|start_header_id|>assistant<|end_header_id|>\n\n"
             return "<|start_header_id|>assistant<|end_header_id|>\n"
 
-        # ChatML/Qwen format
-        if "<|im_start|>assistant\n" in sample:
-            return "<|im_start|>assistant\n"
+        # ChatML/Qwen format - detect actual newline pattern
         if "<|im_start|>assistant" in sample:
+            idx = sample.find("<|im_start|>assistant")
+            after_assistant = sample[idx + len("<|im_start|>assistant") :]
+            # Count leading newlines to match the actual template pattern
+            newlines = ""
+            for char in after_assistant:
+                if char == "\n":
+                    newlines += "\n"
+                else:
+                    break
+            if newlines:
+                return f"<|im_start|>assistant{newlines}"
             return "<|im_start|>assistant\n"
 
         # Llama 2/Mistral format - response comes after [/INST]
         if "[/INST]" in sample:
             return "[/INST] "
 
-        # Phi/Zephyr format
-        if "<|assistant|>\n" in sample:
-            return "<|assistant|>\n"
+        # Phi/Zephyr format - detect actual newline pattern
         if "<|assistant|>" in sample:
+            idx = sample.find("<|assistant|>")
+            after_assistant = sample[idx + len("<|assistant|>") :]
+            newlines = ""
+            for char in after_assistant:
+                if char == "\n":
+                    newlines += "\n"
+                else:
+                    break
+            if newlines:
+                return f"<|assistant|>{newlines}"
             return "<|assistant|>\n"
 
         # Fallback: try to find "assistant" marker
