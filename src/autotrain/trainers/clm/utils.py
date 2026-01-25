@@ -1738,8 +1738,13 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
     else:
         already_formatted = False
 
-    # Only apply chat template if not already formatted
-    if not already_formatted:
+    # Only apply chat template if not already formatted AND apply_chat_template is True
+    # The apply_chat_template flag allows users to skip template application for pre-formatted data
+    should_apply_template = getattr(config, "apply_chat_template", True)
+    if not should_apply_template:
+        logger.info("Skipping chat template application (apply_chat_template=False)")
+
+    if not already_formatted and should_apply_template:
         # Map legacy chat template names to new ChatFormat
         chat_format_map = {
             "chatml": "chatml",
@@ -1837,7 +1842,12 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
 
     # Add completion_mask for response-only training (SFT label masking)
     # This marks which tokens are assistant responses (1) vs prompts (0)
-    if config.chat_template and "text" in train_data.column_names and config.trainer == "sft":
+    # Trigger if: chat_template is set OR data was already formatted (pre-processed externally)
+    # This allows users with pre-formatted data to still get response-only loss
+    should_add_mask = (
+        (config.chat_template or already_formatted) and "text" in train_data.column_names and config.trainer == "sft"
+    )
+    if should_add_mask:
         response_template = get_response_template(tokenizer)
         if response_template:
             logger.info(f"Adding completion_mask for response-only training (template: {repr(response_template)})")
