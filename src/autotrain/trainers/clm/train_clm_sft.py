@@ -219,11 +219,15 @@ def train(config):
         logger.info("No chat template - computing loss on entire sequence")
 
     # Add completion_mask to dataset if needed (for models without {% generation %} tags)
-    if use_completion_mask:
+    # Note: process_data_with_chat_template already adds completion_mask when chat_template is set,
+    # so we only need to add it here for non-chat-template cases
+    if use_completion_mask and "completion_mask" not in train_data.column_names:
         response_template = utils.get_response_template(tokenizer)
-        train_data = utils.add_completion_mask(train_data, tokenizer, response_template, config.text_column)
-        if valid_data is not None:
-            valid_data = utils.add_completion_mask(valid_data, tokenizer, response_template, config.text_column)
+        # Use "text" column which contains the formatted chat, not config.text_column which may be "messages"
+        text_col = "text" if "text" in train_data.column_names else config.text_column
+        train_data = utils.add_completion_mask(train_data, tokenizer, response_template, text_col)
+        if valid_data is not None and "completion_mask" not in valid_data.column_names:
+            valid_data = utils.add_completion_mask(valid_data, tokenizer, response_template, text_col)
 
     args = SFTConfig(**training_args)
 
