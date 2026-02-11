@@ -7,6 +7,7 @@
   <a href="https://pypi.org/project/aitraining/"><img src="https://img.shields.io/pypi/pyversions/aitraining.svg" alt="Python versions"></a>
   <a href="https://github.com/monostate/aitraining/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://docs.monostate.com"><img src="https://img.shields.io/badge/docs-monostate.com-FF6B35.svg" alt="Documentation"></a>
+  <a href="https://deepwiki.com/monostate/aitraining"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </p>
 
 <p align="center">
