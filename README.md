@@ -69,7 +69,34 @@ encoded = renderer.build_supervised_example(conversation)
 # Returns: {'input_ids', 'labels', 'token_weights', 'attention_mask'}
 ```
 
-### Custom RL Environments
+### GRPO Training with Custom Environments
+
+Train with Group Relative Policy Optimization using your own reward environment. The env provides prompts and scores multi-turn episodes — GRPO generates completions, scores them, and optimizes:
+
+```bash
+aitraining llm --train --trainer grpo \
+  --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
+  --rl-env-module my_envs.hotel_env \
+  --rl-env-class HotelEnv \
+  --rl-num-generations 4 \
+  --rl-max-new-tokens 256
+```
+
+Your environment implements three methods:
+
+```python
+class HotelEnv:
+    def build_dataset(self, tokenizer) -> Dataset:
+        """Return HF Dataset with 'prompt' column."""
+
+    def score_episode(self, model, tokenizer, completion, case_idx) -> float:
+        """Run multi-turn episode from completion, return 0.0-1.0 score."""
+
+    def get_tools(self) -> list[dict]:
+        """Return tool schemas for generation (optional)."""
+```
+
+### Custom RL Environments (PPO)
 
 Build custom reward functions for PPO training with three environment types:
 
@@ -228,6 +255,7 @@ train(config)
 | **Trainers** |
 | SFT/DPO/ORPO | Yes | Yes | Yes |
 | PPO (RLHF) | Basic | Enhanced (TRL) | Advanced |
+| GRPO | No | Yes (TRL 0.28) | Custom |
 | Reward Modeling | Yes | Yes | No |
 | Knowledge Distillation | No | Yes (KL + CE loss) | Yes (text-only) |
 | **Data** |
@@ -258,7 +286,7 @@ train(config)
 | Vision Tasks | Yes | Yes | No |
 | NLP Tasks | Yes | Yes | No |
 | Tabular Tasks | Yes | Yes | No |
-| Tool Use Environments | No | No | Yes |
+| Tool Use Environments | No | Yes (GRPO) | Yes |
 | Multiplayer RL | No | No | Yes |
 
 ---
@@ -267,7 +295,7 @@ train(config)
 
 | Task | Trainers | Status |
 |------|----------|--------|
-| LLM Fine-tuning | SFT, DPO, ORPO, PPO, Reward, Distillation | Stable |
+| LLM Fine-tuning | SFT, DPO, ORPO, PPO, GRPO, Reward, Distillation | Stable |
 | Text Classification | Single/Multi-label | Stable |
 | Token Classification | NER, POS tagging | Stable |
 | Sequence-to-Sequence | Translation, Summarization | Stable |

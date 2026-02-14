@@ -64,6 +64,11 @@ def train(config):
 
         train_ppo(config)
 
+    elif config.trainer == "grpo":
+        from autotrain.trainers.clm.train_clm_grpo import train as train_grpo
+
+        train_grpo(config)
+
     elif config.trainer == "distillation":
         from autotrain import logger
         from autotrain.trainers.clm import train_clm_distill

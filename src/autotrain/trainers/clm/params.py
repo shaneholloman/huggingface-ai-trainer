@@ -307,6 +307,19 @@ class LLMTrainingParams(AutoTrainParams):
     rl_top_p: float = Field(1.0, title="Top-p (nucleus) sampling for PPO generation")
     rl_temperature: float = Field(1.0, title="Temperature for PPO generation")
 
+    # ========================================
+    # RL Training (GRPO)
+    # ========================================
+    rl_env_module: Optional[str] = Field(
+        None,
+        title="Python module path for RL environment (e.g., 'my_envs.hotel_env')",
+    )
+    rl_env_class: Optional[str] = Field(
+        None,
+        title="Class name in rl_env_module (e.g., 'HotelEnv')",
+    )
+    rl_num_generations: int = Field(4, title="Number of completions per prompt for GRPO")
+
     # Custom Losses
     custom_loss: Optional[str] = Field(
         None, title="Custom loss function: composite, kl, ppo, variance, or JSON config"
@@ -418,7 +431,7 @@ class LLMTrainingParams(AutoTrainParams):
             "rl_temperature",
         ]
 
-        if self.trainer != "ppo":
+        if self.trainer not in ("ppo", "grpo"):
             # Check if any RL params are explicitly set (not default)
             for param in rl_params:
                 if hasattr(self, param):
@@ -431,6 +444,16 @@ class LLMTrainingParams(AutoTrainParams):
                             f"Parameter '{param}={value}' is only used with trainer=ppo, "
                             f"but trainer={self.trainer}. This parameter will be ignored."
                         )
+        return self
+
+    @model_validator(mode="after")
+    def validate_grpo_params(self):
+        """Validate GRPO-specific parameters."""
+        if self.trainer == "grpo":
+            if not self.rl_env_module:
+                raise ValueError("GRPO trainer requires --rl-env-module (Python module path for the environment)")
+            if not self.rl_env_class:
+                raise ValueError("GRPO trainer requires --rl-env-class (class name in the environment module)")
         return self
 
     @model_validator(mode="after")
