@@ -367,7 +367,26 @@ class UploadLogs(TrainerCallback):
                 else:
                     project_basename = os.path.basename(self.config.project_name.rstrip("/"))
                     self.repo_id = f"{self.config.username}/{project_basename}"
-                self.api.create_repo(repo_id=self.repo_id, repo_type="model", private=True)
+                try:
+                    self.api.create_repo(repo_id=self.repo_id, repo_type="model", private=True)
+                except Exception as e:
+                    if "409" in str(e) or "Conflict" in str(e):
+                        # Repo already exists (e.g. from a previous training run).
+                        # Append datetime to avoid overwriting previous data.
+                        from datetime import datetime
+
+                        suffix = datetime.now().strftime("%Y%m%d-%H%M")
+                        project_basename = self.repo_id.split("/")[-1]
+                        new_name = f"{project_basename}-{suffix}"
+                        self.repo_id = f"{self.config.username}/{new_name}"
+                        logger.warning(
+                            f"Repo already exists. Creating versioned repo: {self.repo_id}"
+                        )
+                        self.api.create_repo(repo_id=self.repo_id, repo_type="model", private=True)
+                        # Propagate versioned repo_id to config so final push_to_hub uses it too
+                        self.config.repo_id = self.repo_id
+                    else:
+                        raise
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         if self.config.push_to_hub is False:
