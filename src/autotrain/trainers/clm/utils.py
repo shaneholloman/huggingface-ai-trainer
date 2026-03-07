@@ -1,6 +1,8 @@
 import ast
 import gc
+import glob
 import os
+import re
 from enum import Enum
 from itertools import chain
 
@@ -24,6 +26,23 @@ from autotrain.trainers.common import (
     remove_autotrain_data,
     save_training_params,
 )
+
+
+def _scrub_tokens_from_logs(project_dir, token):
+    """Scrub HF tokens from log files before upload to prevent HF Hub secret scanning rejection."""
+    if not token:
+        return
+    for log_file in glob.glob(os.path.join(project_dir, "**", "*.log"), recursive=True):
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            if token in content:
+                content = content.replace(token, "[TOKEN_REDACTED]")
+                with open(log_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+                logger.info(f"Scrubbed token from {os.path.basename(log_file)}")
+        except Exception:
+            pass
 
 
 def get_model_max_position_embeddings(model_name, token=None):
@@ -1393,6 +1412,8 @@ def post_training_steps(config, trainer):
                     repo_id = f"{config.username}/{project_basename}"
                 logger.info(f"Ensuring repo exists: {repo_id}")
                 api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+                # Scrub HF tokens from log files before upload to prevent secret scanning rejection
+                _scrub_tokens_from_logs(config.project_name, config.token)
                 logger.info(f"Uploading folder '{config.project_name}' to {repo_id}...")
                 api.upload_folder(
                     folder_path=config.project_name,

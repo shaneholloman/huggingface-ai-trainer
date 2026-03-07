@@ -5,6 +5,7 @@ Utility functions for message rendering
 Helper functions for common rendering tasks.
 """
 
+import json
 from typing import Any, Dict, List, Optional, Union
 
 import torch
@@ -164,6 +165,43 @@ def check_tools_support(tokenizer: AutoTokenizer) -> bool:
     return result
 
 
+def _normalize_tool_call_arguments(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Parse JSON string arguments in tool_calls to dicts.
+
+    Some tokenizer templates (e.g. Qwen3.5) use Jinja filters like `arguments|items`
+    which require arguments to be a dict. But OpenAI-format training data stores
+    arguments as JSON strings. This function normalizes them.
+
+    Args:
+        messages: List of message dicts
+
+    Returns:
+        Messages with tool_call arguments converted from JSON strings to dicts
+    """
+    normalized = []
+    for msg in messages:
+        if not msg.get("tool_calls"):
+            normalized.append(msg)
+            continue
+
+        new_msg = {**msg}
+        new_tool_calls = []
+        for tc in msg["tool_calls"]:
+            func = tc.get("function", {})
+            args = func.get("arguments")
+            if isinstance(args, str):
+                try:
+                    parsed = json.loads(args)
+                    if isinstance(parsed, dict):
+                        tc = {**tc, "function": {**func, "arguments": parsed}}
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            new_tool_calls.append(tc)
+        new_msg["tool_calls"] = new_tool_calls
+        normalized.append(new_msg)
+    return normalized
+
+
 def format_tools_as_text(tools: List[Dict]) -> str:
     """Format tool definitions as text for injection into system prompt.
 
@@ -176,8 +214,6 @@ def format_tools_as_text(tools: List[Dict]) -> str:
     Returns:
         Formatted string describing available tools
     """
-    import json
-
     if not tools:
         return ""
 
@@ -487,12 +523,17 @@ def safe_apply_chat_template(
     # Check if messages have tool_calls field
     has_tool_calls = any(msg.get("tool_calls") for msg in messages)
 
-    # Only serialize tool_calls if present AND tokenizer doesn't support them natively
-    if has_tool_calls and not check_tool_calls_support(tokenizer):
-        from autotrain import logger
+    if has_tool_calls:
+        if check_tool_calls_support(tokenizer):
+            # Tokenizer supports tool_calls natively - normalize string arguments to dicts
+            # Some templates (e.g. Qwen3.5) use arguments|items which requires dict, but
+            # OpenAI-format training data stores arguments as JSON strings
+            messages = _normalize_tool_call_arguments(messages)
+        else:
+            from autotrain import logger
 
-        logger.debug("Tokenizer doesn't support 'tool_calls' field, serializing to content as JSON")
-        messages = serialize_tool_calls_to_content(messages)
+            logger.debug("Tokenizer doesn't support 'tool_calls' field, serializing to content as JSON")
+            messages = serialize_tool_calls_to_content(messages)
 
     # Check if messages have tool role
     has_tool = any(msg.get("role") == "tool" for msg in messages)

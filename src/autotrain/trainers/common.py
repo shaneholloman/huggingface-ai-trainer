@@ -276,6 +276,15 @@ class AutoTrainParams(BaseModel):
         data["token"] = "*****" if data.get("token") else None
         return str(data)
 
+    def __repr__(self):
+        """
+        Repr that masks sensitive fields to prevent token leaks in logs/tracebacks.
+        """
+        data = self.model_dump()
+        data["token"] = "*****" if data.get("token") else None
+        data["wandb_token"] = "*****" if data.get("wandb_token") else None
+        return f"{self.__class__.__name__}({data})"
+
     def __init__(self, **data):
         """
         Initialize the parameters, check for unused/extra parameters and warn the user.

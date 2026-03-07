@@ -1140,6 +1140,140 @@ class TestToolCallsSerialization:
         assert '"type":' in content or '"type": ' in content
 
 
+class TestToolCallsArgumentNormalization:
+    """Tests for auto-parsing JSON string arguments to dicts for models like Qwen3.5."""
+
+    def test_qwen35_string_arguments_normalized(self):
+        """Test that Qwen3.5 tool_calls with JSON string arguments work after normalization."""
+        from autotrain.rendering.utils import safe_apply_chat_template, check_tool_calls_support
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
+        except Exception:
+            pytest.skip("Qwen3.5 tokenizer not available")
+
+        assert check_tool_calls_support(tokenizer) == True
+
+        # OpenAI format: arguments as JSON string (this used to crash with
+        # "Can only get item pairs from a mapping" because Qwen3.5 uses arguments|items)
+        messages = [
+            {"role": "user", "content": "What is the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}'
+                    }
+                }]
+            },
+            {"role": "tool", "content": "Sunny, 22C"},
+            {"role": "assistant", "content": "The weather in Paris is sunny at 22C."},
+        ]
+
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+
+        assert "get_weather" in result
+        assert "Paris" in result
+        assert "<function=get_weather>" in result
+        assert "<parameter=city>" in result
+
+    def test_qwen35_dict_arguments_still_work(self):
+        """Test that dict arguments (already correct format) still work."""
+        from autotrain.rendering.utils import safe_apply_chat_template
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
+        except Exception:
+            pytest.skip("Qwen3.5 tokenizer not available")
+
+        messages = [
+            {"role": "user", "content": "Weather?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": {"city": "London"}
+                    }
+                }]
+            },
+            {"role": "tool", "content": "Rainy"},
+            {"role": "assistant", "content": "Rainy!"},
+        ]
+
+        result = safe_apply_chat_template(tokenizer, messages, tokenize=False)
+        assert "get_weather" in result
+        assert "London" in result
+
+    def test_normalize_preserves_messages_without_tool_calls(self):
+        """Test that normalization doesn't affect regular messages."""
+        from autotrain.rendering.utils import _normalize_tool_call_arguments
+
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+        ]
+
+        result = _normalize_tool_call_arguments(messages)
+        assert result == messages
+
+    def test_normalize_handles_invalid_json(self):
+        """Test that invalid JSON string arguments are left as-is."""
+        from autotrain.rendering.utils import _normalize_tool_call_arguments
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "test",
+                        "arguments": "not valid json {{"
+                    }
+                }]
+            }
+        ]
+
+        result = _normalize_tool_call_arguments(messages)
+        # Should leave invalid JSON as-is, not crash
+        assert result[0]["tool_calls"][0]["function"]["arguments"] == "not valid json {{"
+
+    def test_normalize_handles_nested_arguments(self):
+        """Test normalization with complex nested JSON arguments."""
+        from autotrain.rendering.utils import _normalize_tool_call_arguments
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": '{"query": "test", "filters": {"lang": "en"}, "limit": 10}'
+                    }
+                }]
+            }
+        ]
+
+        result = _normalize_tool_call_arguments(messages)
+        args = result[0]["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(args, dict)
+        assert args["query"] == "test"
+        assert args["filters"] == {"lang": "en"}
+        assert args["limit"] == 10
+
+
 class TestToolsDefinitionsInjection:
     """Tests for tools parameter injection into messages for models that don't support native tools."""
 
