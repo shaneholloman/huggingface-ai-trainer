@@ -338,5 +338,79 @@ class TestValidationDataHandling:
         assert 1 in valid_data[0]["completion_mask"]
 
 
+class TestOrpoDpoSkipsInputIds:
+    """Tests that ORPO/DPO trainers skip input_ids pre-tokenization for pre-formatted data.
+
+    ORPO/DPO datasets have chosen/rejected columns but no 'text' column.
+    Pre-tokenizing with example.get('text', '') produces empty input_ids [],
+    which crashes transformers floating_point_ops() with:
+    AttributeError: 'list' object has no attribute 'numel'
+    """
+
+    def test_orpo_preformatted_skips_input_ids(self, qwen_tokenizer):
+        """ORPO with pre-formatted chosen column should NOT add input_ids."""
+        config = MockConfig(
+            text_column="chosen",
+            trainer="orpo",
+            chat_template="tokenizer",
+        )
+
+        # Simulate pre-formatted ORPO data (chosen column has template tokens)
+        train_data = Dataset.from_dict({
+            "chosen": [
+                "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>",
+            ],
+            "rejected": [
+                "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\nGo away<|im_end|>",
+            ],
+        })
+
+        result_train, _ = process_data_with_chat_template(config, qwen_tokenizer, train_data, None)
+
+        # input_ids should NOT be present for ORPO
+        assert "input_ids" not in result_train.column_names
+
+    def test_dpo_preformatted_skips_input_ids(self, qwen_tokenizer):
+        """DPO with pre-formatted chosen column should NOT add input_ids."""
+        config = MockConfig(
+            text_column="chosen",
+            trainer="dpo",
+            chat_template="tokenizer",
+        )
+
+        train_data = Dataset.from_dict({
+            "chosen": [
+                "<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n4<|im_end|>",
+            ],
+            "rejected": [
+                "<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n5<|im_end|>",
+            ],
+        })
+
+        result_train, _ = process_data_with_chat_template(config, qwen_tokenizer, train_data, None)
+
+        assert "input_ids" not in result_train.column_names
+
+    def test_sft_preformatted_still_gets_input_ids(self, qwen_tokenizer):
+        """SFT with pre-formatted text should still get input_ids (regression check)."""
+        config = MockConfig(
+            text_column="text",
+            trainer="sft",
+            chat_template="tokenizer",
+        )
+
+        train_data = Dataset.from_dict({
+            "text": [
+                "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\nHi!<|im_end|>",
+            ],
+        })
+
+        result_train, _ = process_data_with_chat_template(config, qwen_tokenizer, train_data, None)
+
+        # SFT should still have input_ids
+        assert "input_ids" in result_train.column_names
+        assert len(result_train[0]["input_ids"]) > 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

@@ -1732,29 +1732,32 @@ def process_data_with_chat_template(config, tokenizer, train_data, valid_data):
                 # TRL 0.26+ uses 'input_ids' presence to detect already-processed data
                 # Without this, TRL tries to apply chat template to 'messages' column
                 # which fails for datasets with non-alternating roles (e.g., tool calls)
-                logger.info("Pre-tokenizing already-formatted data to signal TRL that processing is complete")
+                # Skip for ORPO/DPO: they use chosen/rejected columns, not 'text',
+                # and empty input_ids crashes transformers floating_point_ops()
+                if config.trainer not in ("orpo", "dpo"):
+                    logger.info("Pre-tokenizing already-formatted data to signal TRL that processing is complete")
 
-                def tokenize_text(example, tokenizer):
-                    # Always use 'text' column - this is where the formatted text is stored
-                    text = example.get("text", "")
-                    if text and isinstance(text, str):
-                        tokenized = tokenizer(text, truncation=False, add_special_tokens=False)
-                        return {"input_ids": tokenized["input_ids"]}
-                    return {"input_ids": []}
+                    def tokenize_text(example, tokenizer):
+                        # Always use 'text' column - this is where the formatted text is stored
+                        text = example.get("text", "")
+                        if text and isinstance(text, str):
+                            tokenized = tokenizer(text, truncation=False, add_special_tokens=False)
+                            return {"input_ids": tokenized["input_ids"]}
+                        return {"input_ids": []}
 
-                train_data = train_data.map(
-                    tokenize_text,
-                    fn_kwargs={"tokenizer": tokenizer},
-                    load_from_cache_file=False,
-                    desc="Pre-tokenizing training data",
-                )
-                if valid_data is not None:
-                    valid_data = valid_data.map(
+                    train_data = train_data.map(
                         tokenize_text,
                         fn_kwargs={"tokenizer": tokenizer},
                         load_from_cache_file=False,
-                        desc="Pre-tokenizing validation data",
+                        desc="Pre-tokenizing training data",
                     )
+                    if valid_data is not None:
+                        valid_data = valid_data.map(
+                            tokenize_text,
+                            fn_kwargs={"tokenizer": tokenizer},
+                            load_from_cache_file=False,
+                            desc="Pre-tokenizing validation data",
+                        )
                 # Skip to end of function where BOS stripping and turn marker validation happens
                 already_formatted = True
             else:
